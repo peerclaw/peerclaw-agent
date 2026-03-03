@@ -5,9 +5,12 @@ PeerClaw P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，�
 ## 核心特性
 
 - **WebRTC 直连** — Agent 之间通过 DataChannel 建立低延迟 P2P 通道
-- **Nostr 兜底** — NAT 穿越失败时自动回退到 Nostr relay 传输
-- **TOFU 信任** — Trust-On-First-Use 模型，首次连接记录公钥指纹，后续自动验证
+- **Nostr 完整传输** — 基于 `fiatjaf.com/nostr` 库，NIP-44 加密，多 relay 支持与自动故障切换
+- **Transport Selector** — 自动传输选择：WebRTC 优先，失败自动降级 Nostr，恢复后自动升级
+- **端到端加密** — X25519 ECDH 密钥交换 + XChaCha20-Poly1305 加密，信令阶段建立加密会话
+- **TOFU 信任** — 五级信任模型（Unknown / TOFU / Verified / Blocked / Pinned），支持 CLI 管理
 - **消息签名** — 基于 Ed25519 的消息级签名验证，确保消息完整性和来源可信
+- **连接质量监控** — RTT、丢包率、吞吐统计，连接降级自动通知
 - **自动发现** — 通过 peerclaw-server 注册和发现其他 Agent
 
 ## 架构
@@ -26,8 +29,12 @@ PeerClaw P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，�
 │  │           │  │    Sandbox       │  │
 │  └───────────┘  └──────────────────┘  │
 │  ┌─────────────────────────────────┐  │
-│  │          Transport              │  │
-│  │   WebRTC  ◄──►  Nostr relay     │  │
+│  │     Transport Selector         │  │
+│  │  ┌────────┐    ┌────────────┐  │  │
+│  │  │ WebRTC │◄──►│Nostr relay │  │  │
+│  │  │(primary)│   │ (fallback) │  │  │
+│  │  └────────┘    └────────────┘  │  │
+│  │     ConnectionMonitor          │  │
 │  └─────────────────────────────────┘  │
 └───────────────────────────────────────┘
 ```
@@ -102,9 +109,11 @@ for _, r := range results {
 | `agent.New(opts)` | 创建 Agent 实例 |
 | `agent.Start(ctx)` | 注册到平台并开始接受连接 |
 | `agent.Stop(ctx)` | 注销并关闭所有连接 |
-| `agent.Send(ctx, env)` | 发送签名消息到对端 |
+| `agent.Send(ctx, env)` | 发送签名 + 加密消息到对端 |
 | `agent.OnMessage(handler)` | 注册消息处理回调 |
 | `agent.Discover(ctx, caps)` | 按能力发现 Agent |
+| `agent.EstablishSession(peerID, peerX25519)` | 建立 E2E 加密会话 |
+| `agent.X25519PublicKeyString()` | 获取 X25519 公钥（hex） |
 | `agent.ID()` | 获取注册后的 Agent ID |
 | `agent.PublicKey()` | 获取 Base64 编码的公钥 |
 
@@ -118,6 +127,7 @@ for _, r := range results {
 | `Protocols` | 支持的协议（如 `"a2a"`, `"mcp"`） |
 | `KeypairPath` | 密钥文件路径（为空则每次生成新密钥） |
 | `TrustStorePath` | 信任存储文件路径 |
+| `NostrRelays` | Nostr relay URL 列表（如 `"wss://relay.damus.io"`） |
 | `Logger` | 结构化日志器 |
 
 ## 安全模型
@@ -132,9 +142,26 @@ PeerClaw 采用三层安全架构：
 
 每条消息使用发送方私钥签名。接收方使用发送方公钥验证签名，确保消息未被篡改且来源可信。
 
-### 3. 执行级 — 沙箱
+### 3. 传输级 — 端到端加密
+
+信令握手阶段交换 X25519 公钥，通过 ECDH 计算共享密钥，使用 XChaCha20-Poly1305 加密消息 Payload。Nostr 传输额外使用 NIP-44 格式封装。
+
+### 4. 执行级 — 沙箱
 
 对外部 Agent 的请求实施权限约束和资源限制，防止恶意操作。
+
+## Trust CLI
+
+`peerclaw-trust` 命令行工具管理信任条目：
+
+```bash
+peerclaw-trust list -store trust.json          # 列出所有信任条目
+peerclaw-trust verify -store trust.json -id <agent-id>  # 升级为 Verified
+peerclaw-trust pin -store trust.json -id <agent-id>     # 固定信任（Pinned）
+peerclaw-trust revoke -store trust.json -id <agent-id>  # 撤销信任
+peerclaw-trust export -store trust.json -out backup.json # 导出
+peerclaw-trust import -store trust.json -in backup.json  # 导入
+```
 
 ## License
 
