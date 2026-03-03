@@ -3,7 +3,7 @@ module github.com/peerclaw/peerclaw-agent
 go 1.24.1
 
 require (
-	github.com/peerclaw/peerclaw-go v0.0.0
+	github.com/peerclaw/peerclaw-core v0.0.0
 	github.com/pion/webrtc/v4 v4.1.2
 	nhooyr.io/websocket v1.8.17
 )
@@ -31,4 +31,4 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 )
 
-replace github.com/peerclaw/peerclaw-go => ../go
+replace github.com/peerclaw/peerclaw-core => ../core

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	pcsignaling "github.com/peerclaw/peerclaw-go/signaling"
+	pcsignaling "github.com/peerclaw/peerclaw-core/signaling"
 	"nhooyr.io/websocket"
 )
 

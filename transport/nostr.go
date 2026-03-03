@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
+	"github.com/peerclaw/peerclaw-core/envelope"
 )
 
 // NostrTransport implements Transport using Nostr relays as a fallback

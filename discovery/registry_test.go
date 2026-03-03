@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/peerclaw/peerclaw-go/agentcard"
+	"github.com/peerclaw/peerclaw-core/agentcard"
 )
 
 func TestRegistryClient_Register(t *testing.T) {

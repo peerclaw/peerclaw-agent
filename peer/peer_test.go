@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
-	"github.com/peerclaw/peerclaw-go/protocol"
+	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/protocol"
 )
 
 type mockTransport struct {

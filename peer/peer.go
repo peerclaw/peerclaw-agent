@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
+	"github.com/peerclaw/peerclaw-core/envelope"
 	"github.com/peerclaw/peerclaw-agent/transport"
 )
 

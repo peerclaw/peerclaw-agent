@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	pcsignaling "github.com/peerclaw/peerclaw-go/signaling"
+	pcsignaling "github.com/peerclaw/peerclaw-core/signaling"
 )
 
 func TestClient_SendWithoutConnect(t *testing.T) {

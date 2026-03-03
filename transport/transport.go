@@ -3,7 +3,7 @@ package transport
 import (
 	"context"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
+	"github.com/peerclaw/peerclaw-core/envelope"
 )
 
 // Transport defines the interface for sending and receiving envelopes over a network transport.

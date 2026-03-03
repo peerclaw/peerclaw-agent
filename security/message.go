@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
-	"github.com/peerclaw/peerclaw-go/identity"
+	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
 )
 
 const (

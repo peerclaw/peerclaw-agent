@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peerclaw/peerclaw-go/envelope"
-	"github.com/peerclaw/peerclaw-go/identity"
-	"github.com/peerclaw/peerclaw-go/protocol"
+	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
+	"github.com/peerclaw/peerclaw-core/protocol"
 )
 
 func TestTrustStore_TOFU(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/peerclaw/peerclaw-go/agentcard"
+	"github.com/peerclaw/peerclaw-core/agentcard"
 )
 
 // RegistryClient provides methods for interacting with the peerclaw-server
