@@ -38,6 +38,10 @@ type Options struct {
 	// TrustStorePath is the path to the trust store file.
 	TrustStorePath string
 
+	// NostrRelays is a list of Nostr relay WebSocket URLs for fallback transport.
+	// If non-empty, a transport Selector will be created wrapping WebRTC + Nostr.
+	NostrRelays []string
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
 }
@@ -52,6 +56,7 @@ type Agent struct {
 	sigClient     *pcsignaling.Client
 	trustStore    *security.TrustStore
 	msgValidator  *security.MessageValidator
+	sessionKeys   map[string]*security.SessionKey // peer public key -> session key
 	handler       MessageHandler
 	agentID       string
 	logger        *slog.Logger
@@ -105,6 +110,7 @@ func New(opts Options) (*Agent, error) {
 		sigClient:    pcsignaling.NewClient(opts.ServerURL, "", logger),
 		trustStore:   ts,
 		msgValidator: security.NewMessageValidator(),
+		sessionKeys:  make(map[string]*security.SessionKey),
 		logger:       logger,
 	}, nil
 }
@@ -172,9 +178,30 @@ func (a *Agent) Stop(ctx context.Context) error {
 }
 
 // Send sends an envelope to a connected peer.
+// The payload is signed, then encrypted if a session key exists for the peer.
 func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
-	// Sign the envelope.
+	// Sign the envelope payload.
 	env.Signature = identity.Sign(a.keypair.PrivateKey, env.Payload)
+
+	// Encrypt if we have a session key for this peer.
+	a.mu.Lock()
+	sk := a.sessionKeys[env.Destination]
+	a.mu.Unlock()
+
+	if sk != nil {
+		encrypted, err := sk.Encrypt(env.Payload)
+		if err != nil {
+			return fmt.Errorf("encrypt payload: %w", err)
+		}
+		env.Payload = encrypted
+		env.Encrypted = true
+		x25519Pub, err := a.keypair.X25519PublicKeyString()
+		if err != nil {
+			return fmt.Errorf("get X25519 public key: %w", err)
+		}
+		env.SenderX25519 = x25519Pub
+	}
+
 	return a.peerManager.Send(ctx, env.Destination, env)
 }
 
@@ -191,6 +218,84 @@ func (a *Agent) ID() string {
 // PublicKey returns the agent's public key string.
 func (a *Agent) PublicKey() string {
 	return a.keypair.PublicKeyString()
+}
+
+// EstablishSession derives a session key with a peer using their X25519 public key.
+// This is called during signaling when X25519 public keys are exchanged.
+func (a *Agent) EstablishSession(peerID, peerX25519PubKeyStr string) error {
+	peerX25519Pub, err := identity.ParseX25519PublicKey(peerX25519PubKeyStr)
+	if err != nil {
+		return fmt.Errorf("parse peer X25519 key: %w", err)
+	}
+
+	privKey, err := a.keypair.X25519PrivateKey()
+	if err != nil {
+		return fmt.Errorf("get X25519 private key: %w", err)
+	}
+
+	sk, err := security.DeriveSessionKey(privKey, peerX25519Pub, peerID)
+	if err != nil {
+		return fmt.Errorf("derive session key: %w", err)
+	}
+
+	a.mu.Lock()
+	a.sessionKeys[peerID] = sk
+	a.mu.Unlock()
+
+	a.logger.Info("session established", "peer", peerID)
+	return nil
+}
+
+// X25519PublicKeyString returns the agent's X25519 public key for key exchange.
+func (a *Agent) X25519PublicKeyString() (string, error) {
+	return a.keypair.X25519PublicKeyString()
+}
+
+// DecryptEnvelope decrypts an encrypted envelope using the session key.
+// Returns the decrypted envelope, or the original if not encrypted.
+func (a *Agent) DecryptEnvelope(env *envelope.Envelope) (*envelope.Envelope, error) {
+	if !env.Encrypted {
+		return env, nil
+	}
+
+	a.mu.Lock()
+	sk := a.sessionKeys[env.Source]
+	a.mu.Unlock()
+
+	if sk == nil {
+		return nil, fmt.Errorf("no session key for peer %s", env.Source)
+	}
+
+	plaintext, err := sk.Decrypt(env.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt payload: %w", err)
+	}
+
+	env.Payload = plaintext
+	env.Encrypted = false
+	return env, nil
+}
+
+// HandleIncomingEnvelope processes a received envelope: decrypts if needed,
+// validates, and passes to the user handler.
+func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelope) {
+	// Decrypt if encrypted.
+	var err error
+	env, err = a.DecryptEnvelope(env)
+	if err != nil {
+		a.logger.Warn("failed to decrypt envelope", "source", env.Source, "error", err)
+		return
+	}
+
+	// Update trust store last seen.
+	if env.Source != "" {
+		a.trustStore.TouchLastSeen(env.Source)
+	}
+
+	// Call user handler.
+	if a.handler != nil {
+		a.handler(ctx, env)
+	}
 }
 
 // Discover finds agents by capabilities on the platform.

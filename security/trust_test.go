@@ -185,6 +185,166 @@ func TestCleanExpiredNonces(t *testing.T) {
 	}
 }
 
+func TestTrustStore_Pinned(t *testing.T) {
+	ts := NewTrustStore()
+	ts.SetTrust("pubkey-1", TrustPinned)
+
+	if !ts.IsAllowed("pubkey-1") {
+		t.Error("pinned peer should be allowed")
+	}
+	if ts.Check("pubkey-1") != TrustPinned {
+		t.Errorf("expected TrustPinned, got %d", ts.Check("pubkey-1"))
+	}
+}
+
+func TestTrustStore_ListEntries(t *testing.T) {
+	ts := NewTrustStore()
+	ts.TrustOnFirstUse("b-key", "2024-01-01")
+	ts.TrustOnFirstUse("a-key", "2024-01-02")
+	ts.SetTrust("c-key", TrustBlocked)
+
+	entries := ts.ListEntries()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+	// Should be sorted by public key
+	if entries[0].PublicKey != "a-key" {
+		t.Errorf("entries[0].PublicKey = %q, want %q", entries[0].PublicKey, "a-key")
+	}
+	if entries[1].PublicKey != "b-key" {
+		t.Errorf("entries[1].PublicKey = %q, want %q", entries[1].PublicKey, "b-key")
+	}
+	if entries[2].PublicKey != "c-key" {
+		t.Errorf("entries[2].PublicKey = %q, want %q", entries[2].PublicKey, "c-key")
+	}
+}
+
+func TestTrustStore_RemoveEntry(t *testing.T) {
+	ts := NewTrustStore()
+	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
+
+	if !ts.RemoveEntry("pubkey-1") {
+		t.Error("RemoveEntry should return true for existing entry")
+	}
+	if ts.Check("pubkey-1") != TrustUnknown {
+		t.Error("removed entry should be TrustUnknown")
+	}
+	if ts.RemoveEntry("pubkey-1") {
+		t.Error("RemoveEntry should return false for non-existent entry")
+	}
+}
+
+func TestTrustStore_ExportImport(t *testing.T) {
+	ts1 := NewTrustStore()
+	ts1.TrustOnFirstUse("pubkey-1", "2024-01-01")
+	ts1.SetTrust("pubkey-2", TrustVerified)
+
+	data, err := ts1.Export()
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	ts2 := NewTrustStore()
+	ts2.TrustOnFirstUse("pubkey-3", "2024-02-01") // pre-existing
+
+	if err := ts2.Import(data); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	if ts2.Check("pubkey-1") != TrustTOFU {
+		t.Error("imported pubkey-1 should be TrustTOFU")
+	}
+	if ts2.Check("pubkey-2") != TrustVerified {
+		t.Error("imported pubkey-2 should be TrustVerified")
+	}
+	if ts2.Check("pubkey-3") != TrustTOFU {
+		t.Error("pre-existing pubkey-3 should still be TrustTOFU")
+	}
+}
+
+func TestTrustStore_LastSeen(t *testing.T) {
+	ts := NewTrustStore()
+	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
+	ts.TouchLastSeen("pubkey-1")
+
+	entries := ts.ListEntries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].LastSeen == "" {
+		t.Error("LastSeen should be set after TouchLastSeen")
+	}
+}
+
+func TestTrustStore_Alias(t *testing.T) {
+	ts := NewTrustStore()
+	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
+	ts.SetAlias("pubkey-1", "Alice")
+
+	entries := ts.ListEntries()
+	if entries[0].Alias != "Alice" {
+		t.Errorf("Alias = %q, want %q", entries[0].Alias, "Alice")
+	}
+}
+
+func TestTrustStore_OnTrustChange(t *testing.T) {
+	ts := NewTrustStore()
+
+	var changes []struct {
+		pubKey   string
+		oldLevel TrustLevel
+		newLevel TrustLevel
+	}
+
+	ts.OnTrustChange(func(pubKey string, oldLevel, newLevel TrustLevel) {
+		changes = append(changes, struct {
+			pubKey   string
+			oldLevel TrustLevel
+			newLevel TrustLevel
+		}{pubKey, oldLevel, newLevel})
+	})
+
+	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
+	ts.SetTrust("pubkey-1", TrustVerified)
+	ts.RemoveEntry("pubkey-1")
+
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 changes, got %d", len(changes))
+	}
+
+	// TOFU on first use
+	if changes[0].oldLevel != TrustUnknown || changes[0].newLevel != TrustTOFU {
+		t.Errorf("change[0]: %d -> %d, want %d -> %d", changes[0].oldLevel, changes[0].newLevel, TrustUnknown, TrustTOFU)
+	}
+	// Set to verified
+	if changes[1].oldLevel != TrustTOFU || changes[1].newLevel != TrustVerified {
+		t.Errorf("change[1]: %d -> %d, want %d -> %d", changes[1].oldLevel, changes[1].newLevel, TrustTOFU, TrustVerified)
+	}
+	// Remove
+	if changes[2].oldLevel != TrustVerified || changes[2].newLevel != TrustUnknown {
+		t.Errorf("change[2]: %d -> %d, want %d -> %d", changes[2].oldLevel, changes[2].newLevel, TrustVerified, TrustUnknown)
+	}
+}
+
+func TestTrustLevelString(t *testing.T) {
+	tests := []struct {
+		level TrustLevel
+		want  string
+	}{
+		{TrustUnknown, "unknown"},
+		{TrustTOFU, "tofu"},
+		{TrustVerified, "verified"},
+		{TrustBlocked, "blocked"},
+		{TrustPinned, "pinned"},
+		{TrustLevel(99), "level(99)"},
+	}
+	for _, tt := range tests {
+		if got := TrustLevelString(tt.level); got != tt.want {
+			t.Errorf("TrustLevelString(%d) = %q, want %q", tt.level, got, tt.want)
+		}
+	}
+}
+
 func TestIdentity_SaveLoadKeypair(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keypair.seed")

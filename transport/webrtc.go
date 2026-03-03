@@ -11,20 +11,35 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// ICECandidateType represents the priority of an ICE candidate type.
+type ICECandidateType int
+
+const (
+	ICECandidateHost  ICECandidateType = 3 // highest priority
+	ICECandidateSrflx ICECandidateType = 2
+	ICECandidateRelay ICECandidateType = 1 // lowest priority
+)
+
+// ConnectionStateHandler is called when the ICE connection state changes.
+type ConnectionStateHandler func(state webrtc.ICEConnectionState)
+
 // WebRTCTransport implements Transport over a WebRTC DataChannel.
 type WebRTCTransport struct {
-	pc     *webrtc.PeerConnection
-	dc     *webrtc.DataChannel
-	inbox  chan *envelope.Envelope
-	logger *slog.Logger
-	mu     sync.Mutex
-	closed bool
+	pc              *webrtc.PeerConnection
+	dc              *webrtc.DataChannel
+	inbox           chan *envelope.Envelope
+	logger          *slog.Logger
+	monitor         *ConnectionMonitor
+	onStateChange   ConnectionStateHandler
+	mu              sync.Mutex
+	closed          bool
 }
 
 // WebRTCConfig holds configuration for creating a WebRTC transport.
 type WebRTCConfig struct {
-	ICEServers []webrtc.ICEServer
-	Logger     *slog.Logger
+	ICEServers     []webrtc.ICEServer
+	Logger         *slog.Logger
+	OnStateChange  ConnectionStateHandler
 }
 
 // NewWebRTCTransport creates a new WebRTC transport with a PeerConnection.
@@ -44,13 +59,18 @@ func NewWebRTCTransport(cfg WebRTCConfig) (*WebRTCTransport, error) {
 	}
 
 	t := &WebRTCTransport{
-		pc:     pc,
-		inbox:  make(chan *envelope.Envelope, 64),
-		logger: logger,
+		pc:            pc,
+		inbox:         make(chan *envelope.Envelope, 64),
+		logger:        logger,
+		monitor:       NewConnectionMonitor(),
+		onStateChange: cfg.OnStateChange,
 	}
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		logger.Debug("ICE connection state changed", "state", state.String())
+		if t.onStateChange != nil {
+			t.onStateChange(state)
+		}
 	})
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
@@ -148,11 +168,56 @@ func (t *WebRTCTransport) Send(ctx context.Context, env *envelope.Envelope) erro
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
-	return dc.Send(data)
+	if err := dc.Send(data); err != nil {
+		t.monitor.RecordLoss()
+		return err
+	}
+	t.monitor.RecordSend(len(data))
+	return nil
 }
 
 func (t *WebRTCTransport) Receive(ctx context.Context) (<-chan *envelope.Envelope, error) {
 	return t.inbox, nil
+}
+
+// Monitor returns the connection quality monitor.
+func (t *WebRTCTransport) Monitor() *ConnectionMonitor {
+	return t.monitor
+}
+
+// ConnectionState returns the current ICE connection state.
+func (t *WebRTCTransport) ConnectionState() webrtc.ICEConnectionState {
+	return t.pc.ICEConnectionState()
+}
+
+// SortICECandidates sorts ICE candidates by type priority: host > srflx > relay.
+// This helps establish direct connections when possible while falling back to TURN.
+func SortICECandidates(candidates []webrtc.ICECandidate) []webrtc.ICECandidate {
+	sorted := make([]webrtc.ICECandidate, len(candidates))
+	copy(sorted, candidates)
+
+	// Sort by type priority (higher = better).
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if candidatePriority(sorted[i]) < candidatePriority(sorted[j]) {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	return sorted
+}
+
+func candidatePriority(c webrtc.ICECandidate) ICECandidateType {
+	switch c.Typ {
+	case webrtc.ICECandidateTypeHost:
+		return ICECandidateHost
+	case webrtc.ICECandidateTypeSrflx:
+		return ICECandidateSrflx
+	case webrtc.ICECandidateTypeRelay:
+		return ICECandidateRelay
+	default:
+		return 0
+	}
 }
 
 func (t *WebRTCTransport) Close() error {

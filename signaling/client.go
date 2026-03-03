@@ -14,13 +14,14 @@ import (
 // Client connects to the peerclaw-server WebSocket signaling endpoint
 // and exchanges SDP offers/answers and ICE candidates.
 type Client struct {
-	url     string
-	agentID string
-	conn    *websocket.Conn
-	inbox   chan pcsignaling.SignalMessage
-	logger  *slog.Logger
-	mu      sync.Mutex
-	closed  bool
+	url        string
+	agentID    string
+	conn       *websocket.Conn
+	inbox      chan pcsignaling.SignalMessage
+	logger     *slog.Logger
+	mu         sync.Mutex
+	closed     bool
+	iceServers []pcsignaling.ICEServerConfig
 }
 
 // NewClient creates a new signaling client.
@@ -72,6 +73,15 @@ func (c *Client) readLoop(ctx context.Context) {
 			continue
 		}
 
+		// Handle config messages internally (ICE servers from server).
+		if msg.Type == pcsignaling.MessageTypeConfig {
+			c.mu.Lock()
+			c.iceServers = msg.ICEServers
+			c.mu.Unlock()
+			c.logger.Info("received ICE server config", "count", len(msg.ICEServers))
+			continue
+		}
+
 		select {
 		case c.inbox <- msg:
 		default:
@@ -100,6 +110,15 @@ func (c *Client) Send(ctx context.Context, msg pcsignaling.SignalMessage) error 
 // Receive returns a channel of incoming signal messages.
 func (c *Client) Receive() <-chan pcsignaling.SignalMessage {
 	return c.inbox
+}
+
+// ICEServers returns the ICE server configurations received from the signaling server.
+func (c *Client) ICEServers() []pcsignaling.ICEServerConfig {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	servers := make([]pcsignaling.ICEServerConfig, len(c.iceServers))
+	copy(servers, c.iceServers)
+	return servers
 }
 
 func (c *Client) isClosed() bool {
