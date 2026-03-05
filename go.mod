@@ -40,6 +40,7 @@ require (
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn/v4 v4.0.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/templexxx/cpu v0.0.1 // indirect
 	github.com/templexxx/xhex v0.0.0-20200614015412-aed53437177b // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
@@ -47,7 +48,7 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )
 
