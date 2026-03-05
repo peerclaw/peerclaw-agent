@@ -11,17 +11,21 @@ import (
 	"nhooyr.io/websocket"
 )
 
+// BridgeMessageHandler is called when a bridge_message is received.
+type BridgeMessageHandler func(payload []byte)
+
 // Client connects to the peerclaw-server WebSocket signaling endpoint
 // and exchanges SDP offers/answers and ICE candidates.
 type Client struct {
-	url        string
-	agentID    string
-	conn       *websocket.Conn
-	inbox      chan pcsignaling.SignalMessage
-	logger     *slog.Logger
-	mu         sync.Mutex
-	closed     bool
-	iceServers []pcsignaling.ICEServerConfig
+	url            string
+	agentID        string
+	conn           *websocket.Conn
+	inbox          chan pcsignaling.SignalMessage
+	logger         *slog.Logger
+	mu             sync.Mutex
+	closed         bool
+	iceServers     []pcsignaling.ICEServerConfig
+	bridgeHandler  BridgeMessageHandler
 }
 
 // NewClient creates a new signaling client.
@@ -82,6 +86,19 @@ func (c *Client) readLoop(ctx context.Context) {
 			continue
 		}
 
+		// Handle bridge messages via registered handler.
+		if msg.Type == pcsignaling.MessageTypeBridgeMessage {
+			c.mu.Lock()
+			handler := c.bridgeHandler
+			c.mu.Unlock()
+			if handler != nil {
+				handler(msg.Payload)
+			} else {
+				c.logger.Warn("received bridge_message but no handler registered")
+			}
+			continue
+		}
+
 		select {
 		case c.inbox <- msg:
 		default:
@@ -119,6 +136,13 @@ func (c *Client) ICEServers() []pcsignaling.ICEServerConfig {
 	servers := make([]pcsignaling.ICEServerConfig, len(c.iceServers))
 	copy(servers, c.iceServers)
 	return servers
+}
+
+// SetBridgeHandler registers a handler for bridge_message types.
+func (c *Client) SetBridgeHandler(handler BridgeMessageHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bridgeHandler = handler
 }
 
 func (c *Client) isClosed() bool {
