@@ -113,6 +113,7 @@ for _, r := range results {
 | `agent.OnMessage(handler)` | 注册消息处理回调 |
 | `agent.Discover(ctx, caps)` | 按能力发现 Agent |
 | `agent.EstablishSession(peerID, peerX25519)` | 建立 E2E 加密会话 |
+| `agent.SetBridgeHandler(handler)` | 注册协议桥接消息处理回调 |
 | `agent.X25519PublicKeyString()` | 获取 X25519 公钥（hex） |
 | `agent.ID()` | 获取注册后的 Agent ID |
 | `agent.PublicKey()` | 获取 Base64 编码的公钥 |
