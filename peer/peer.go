@@ -17,11 +17,15 @@ type Peer struct {
 	Transport transport.Transport
 }
 
+// PeerCallback is called when a peer event occurs.
+type PeerCallback func(p *Peer)
+
 // Manager manages connections to multiple peers and selects the best transport.
 type Manager struct {
-	mu     sync.RWMutex
-	peers  map[string]*Peer // agentID -> Peer
-	logger *slog.Logger
+	mu          sync.RWMutex
+	peers       map[string]*Peer // agentID -> Peer
+	logger      *slog.Logger
+	onPeerAdded PeerCallback
 }
 
 // NewManager creates a new peer manager.
@@ -35,13 +39,24 @@ func NewManager(logger *slog.Logger) *Manager {
 	}
 }
 
+// OnPeerAdded registers a callback invoked when a new peer is added.
+func (m *Manager) OnPeerAdded(cb PeerCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onPeerAdded = cb
+}
+
 // AddPeer registers a peer with its transport.
 func (m *Manager) AddPeer(p *Peer) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.peers[p.ID] = p
+	cb := m.onPeerAdded
+	m.mu.Unlock()
+
 	m.logger.Info("peer added", "id", p.ID)
+	if cb != nil {
+		cb(p)
+	}
 }
 
 // RemovePeer disconnects and removes a peer.

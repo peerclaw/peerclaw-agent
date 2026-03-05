@@ -52,9 +52,10 @@ type TrustEntry struct {
 
 // TrustStore manages TOFU trust relationships with peers.
 type TrustStore struct {
-	mu             sync.RWMutex
-	trusted        map[string]TrustEntry // public key -> entry
-	onTrustChange  TrustChangeCallback
+	mu              sync.RWMutex
+	trusted         map[string]TrustEntry // public key -> entry
+	onTrustChange   TrustChangeCallback
+	reputationStore *ReputationStore
 }
 
 // NewTrustStore creates a new empty trust store.
@@ -227,4 +228,28 @@ func (ts *TrustStore) SaveToFile(path string) error {
 		return fmt.Errorf("marshal trust store: %w", err)
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// SetReputationStore associates a ReputationStore with this TrustStore.
+func (ts *TrustStore) SetReputationStore(rs *ReputationStore) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.reputationStore = rs
+}
+
+// IsAllowedWithReputation returns true if the peer passes both trust and reputation checks.
+// If no ReputationStore is set, it falls back to IsAllowed.
+func (ts *TrustStore) IsAllowedWithReputation(pubKey string) bool {
+	if !ts.IsAllowed(pubKey) {
+		return false
+	}
+
+	ts.mu.RLock()
+	rs := ts.reputationStore
+	ts.mu.RUnlock()
+
+	if rs != nil && rs.IsMalicious(pubKey) {
+		return false
+	}
+	return true
 }

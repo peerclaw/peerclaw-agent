@@ -183,6 +183,11 @@ type DiscoverResult struct {
 	PublicKey string
 }
 
+// Close is a no-op for RegistryClient (satisfies the Discovery interface).
+func (c *RegistryClient) Close() error {
+	return nil
+}
+
 func (c *RegistryClient) readError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))

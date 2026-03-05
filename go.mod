@@ -6,6 +6,7 @@ require (
 	fiatjaf.com/nostr v0.0.0-20260301124453-4dab261bdf5d
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+	github.com/google/uuid v1.6.0
 	github.com/peerclaw/peerclaw-core v0.0.0
 	github.com/pion/webrtc/v4 v4.1.2
 	golang.org/x/crypto v0.48.0
@@ -18,7 +19,6 @@ require (
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect

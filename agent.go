@@ -42,6 +42,45 @@ type Options struct {
 	// If non-empty, a transport Selector will be created wrapping WebRTC + Nostr.
 	NostrRelays []string
 
+	// Discovery is an optional custom discovery implementation.
+	// If nil, a RegistryClient is created using ServerURL.
+	Discovery discovery.Discovery
+
+	// Signaling is an optional custom signaling client implementation.
+	// If nil, a WebSocket Client is created using ServerURL.
+	Signaling pcsignaling.SignalingClient
+
+	// DHTEnabled enables DHT-based discovery alongside or instead of the server registry.
+	DHTEnabled bool
+
+	// DHTBootstrapNodes lists addresses of DHT bootstrap nodes.
+	DHTBootstrapNodes []string
+
+	// DHTStorePath is the file path for persisting DHT data.
+	DHTStorePath string
+
+	// ReputationEnabled enables per-peer reputation tracking.
+	ReputationEnabled bool
+
+	// ReputationStorePath is the file path for persisting reputation data.
+	ReputationStorePath string
+
+	// Serverless runs the agent without a central server.
+	// Uses DHT discovery + Nostr signaling exclusively.
+	Serverless bool
+
+	// ICEServers lists STUN/TURN server URLs for serverless WebRTC.
+	ICEServers []string
+
+	// MessageCachePath is the file path for persisting offline message cache.
+	MessageCachePath string
+
+	// IdentityAnchorEnabled enables on-chain identity anchoring.
+	IdentityAnchorEnabled bool
+
+	// IdentityRecoveryKeys lists public keys authorized for identity recovery.
+	IdentityRecoveryKeys []string
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
 }
@@ -52,8 +91,8 @@ type Agent struct {
 	opts          Options
 	keypair       *identity.Keypair
 	peerManager   *peer.Manager
-	registry      *discovery.RegistryClient
-	sigClient     *pcsignaling.Client
+	discovery     discovery.Discovery
+	signaling     pcsignaling.SignalingClient
 	trustStore    *security.TrustStore
 	msgValidator  *security.MessageValidator
 	sessionKeys   map[string]*security.SessionKey // peer public key -> session key
@@ -102,12 +141,24 @@ func New(opts Options) (*Agent, error) {
 		}
 	}
 
+	// Use provided Discovery or fall back to RegistryClient.
+	disc := opts.Discovery
+	if disc == nil {
+		disc = discovery.NewRegistryClient(opts.ServerURL, logger)
+	}
+
+	// Use provided Signaling or fall back to WebSocket Client.
+	sig := opts.Signaling
+	if sig == nil {
+		sig = pcsignaling.NewClient(opts.ServerURL, "", logger)
+	}
+
 	return &Agent{
 		opts:         opts,
 		keypair:      kp,
 		peerManager:  peer.NewManager(logger),
-		registry:     discovery.NewRegistryClient(opts.ServerURL, logger),
-		sigClient:    pcsignaling.NewClient(opts.ServerURL, "", logger),
+		discovery:    disc,
+		signaling:    sig,
 		trustStore:   ts,
 		msgValidator: security.NewMessageValidator(),
 		sessionKeys:  make(map[string]*security.SessionKey),
@@ -126,7 +177,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.mu.Unlock()
 
 	// Register with the platform.
-	card, err := a.registry.Register(ctx, discovery.RegisterRequest{
+	card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
 		Name:         a.opts.Name,
 		PublicKey:    a.keypair.PublicKeyString(),
 		Capabilities: a.opts.Capabilities,
@@ -157,7 +208,7 @@ func (a *Agent) Stop(ctx context.Context) error {
 
 	// Deregister from platform.
 	if a.agentID != "" {
-		if err := a.registry.Deregister(ctx, a.agentID); err != nil {
+		if err := a.discovery.Deregister(ctx, a.agentID); err != nil {
 			a.logger.Warn("failed to deregister", "error", err)
 		}
 	}
@@ -170,7 +221,7 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 
 	// Close signaling and peers.
-	a.sigClient.Close()
+	a.signaling.Close()
 	a.peerManager.Close()
 
 	a.logger.Info("agent stopped", "id", a.agentID)
@@ -300,7 +351,7 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 
 // Discover finds agents by capabilities on the platform.
 func (a *Agent) Discover(ctx context.Context, capabilities []string) ([]*discovery.DiscoverResult, error) {
-	agents, err := a.registry.Discover(ctx, discovery.DiscoverRequest{
+	agents, err := a.discovery.Discover(ctx, discovery.DiscoverRequest{
 		Capabilities: capabilities,
 	})
 	if err != nil {
