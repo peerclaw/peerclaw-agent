@@ -1,23 +1,25 @@
+**English** | [中文](README_zh.md)
+
 # peerclaw-agent
 
-PeerClaw P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型与消息签名验证。
+PeerClaw P2P Agent SDK. Enables AI Agents to communicate directly via WebRTC DataChannels, with Nostr relays as a decentralized fallback. Ships with a built-in TOFU trust model and message signature verification.
 
-## 核心特性
+## Key Features
 
-- **WebRTC 直连** — Agent 之间通过 DataChannel 建立低延迟 P2P 通道
-- **Nostr 完整传输** — 基于 `fiatjaf.com/nostr` 库，NIP-44 加密，多 relay 支持与自动故障切换
-- **Transport Selector** — 自动传输选择：WebRTC 优先，失败自动降级 Nostr，恢复后自动升级
-- **端到端加密** — X25519 ECDH 密钥交换 + XChaCha20-Poly1305 加密，信令阶段建立加密会话
-- **TOFU 信任** — 五级信任模型（Unknown / TOFU / Verified / Blocked / Pinned），支持 CLI 管理
-- **消息签名** — 基于 Ed25519 的消息级签名验证，确保消息完整性和来源可信
-- **连接质量监控** — RTT、丢包率、吞吐统计，连接降级自动通知
-- **自动发现** — 通过 peerclaw-server 注册和发现其他 Agent
+- **WebRTC Direct Connection** — Agents establish low-latency P2P channels via DataChannels
+- **Full Nostr Transport** — Built on the `fiatjaf.com/nostr` library with NIP-44 encryption, multi-relay support, and automatic failover
+- **Transport Selector** — Automatic transport selection: prefers WebRTC, falls back to Nostr on failure, and upgrades back when WebRTC recovers
+- **End-to-End Encryption** — X25519 ECDH key exchange + XChaCha20-Poly1305 encryption, with encrypted sessions established during signaling
+- **TOFU Trust** — Five-level trust model (Unknown / TOFU / Verified / Blocked / Pinned) with CLI management
+- **Message Signing** — Ed25519 per-message signature verification ensuring message integrity and origin authenticity
+- **Connection Quality Monitoring** — RTT, packet loss, and throughput metrics with automatic degradation notifications
+- **Auto-Discovery** — Register and discover other Agents through peerclaw-server
 
-## 架构
+## Architecture
 
 ```
 ┌───────────────────────────────────────┐
-│              Agent (顶层 API)          │
+│           Agent (Top-level API)       │
 │                                       │
 │  ┌───────────┐  ┌──────────────────┐  │
 │  │ Discovery │  │    Signaling     │  │
@@ -39,9 +41,9 @@ PeerClaw P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，�
 └───────────────────────────────────────┘
 ```
 
-## 快速开始
+## Quick Start
 
-### Echo Agent 完整示例
+### Full Echo Agent Example
 
 ```go
 package main
@@ -66,7 +68,7 @@ func main() {
         ServerURL:    "http://localhost:8080",
         Capabilities: []string{"echo"},
         Protocols:    []string{"a2a"},
-        KeypairPath:  "echo.key",       // 自动生成并持久化密钥
+        KeypairPath:  "echo.key",       // Auto-generates and persists the keypair
         Logger:       logger,
     })
     if err != nil {
@@ -74,7 +76,7 @@ func main() {
         os.Exit(1)
     }
 
-    // 收到消息后原样回复
+    // Echo back every received message as-is
     a.OnMessage(func(ctx context.Context, env *envelope.Envelope) {
         reply := envelope.New(a.ID(), env.Source, protocol.ProtocolA2A, env.Payload)
         reply.MessageType = envelope.MessageTypeResponse
@@ -93,7 +95,7 @@ func main() {
 }
 ```
 
-### 发现其他 Agent
+### Discovering Other Agents
 
 ```go
 results, _ := a.Discover(ctx, []string{"search"})
@@ -102,66 +104,66 @@ for _, r := range results {
 }
 ```
 
-## API 参考
+## API Reference
 
-| 方法 | 说明 |
-|------|------|
-| `agent.New(opts)` | 创建 Agent 实例 |
-| `agent.Start(ctx)` | 注册到平台并开始接受连接 |
-| `agent.Stop(ctx)` | 注销并关闭所有连接 |
-| `agent.Send(ctx, env)` | 发送签名 + 加密消息到对端 |
-| `agent.OnMessage(handler)` | 注册消息处理回调 |
-| `agent.Discover(ctx, caps)` | 按能力发现 Agent |
-| `agent.EstablishSession(peerID, peerX25519)` | 建立 E2E 加密会话 |
-| `agent.SetBridgeHandler(handler)` | 注册协议桥接消息处理回调 |
-| `agent.X25519PublicKeyString()` | 获取 X25519 公钥（hex） |
-| `agent.ID()` | 获取注册后的 Agent ID |
-| `agent.PublicKey()` | 获取 Base64 编码的公钥 |
+| Method | Description |
+|--------|-------------|
+| `agent.New(opts)` | Create a new Agent instance |
+| `agent.Start(ctx)` | Register with the platform and start accepting connections |
+| `agent.Stop(ctx)` | Unregister and close all connections |
+| `agent.Send(ctx, env)` | Send a signed and encrypted message to a peer |
+| `agent.OnMessage(handler)` | Register a message handler callback |
+| `agent.Discover(ctx, caps)` | Discover Agents by capabilities |
+| `agent.EstablishSession(peerID, peerX25519)` | Establish an E2E encrypted session |
+| `agent.SetBridgeHandler(handler)` | Register a protocol bridge message handler callback |
+| `agent.X25519PublicKeyString()` | Get the X25519 public key (hex-encoded) |
+| `agent.ID()` | Get the Agent ID assigned after registration |
+| `agent.PublicKey()` | Get the Base64-encoded public key |
 
-### Options 配置
+### Options
 
-| 字段 | 说明 |
-|------|------|
-| `Name` | Agent 显示名称 |
-| `ServerURL` | peerclaw-server 地址 |
-| `Capabilities` | 能力列表（如 `"chat"`, `"search"`） |
-| `Protocols` | 支持的协议（如 `"a2a"`, `"mcp"`） |
-| `KeypairPath` | 密钥文件路径（为空则每次生成新密钥） |
-| `TrustStorePath` | 信任存储文件路径 |
-| `NostrRelays` | Nostr relay URL 列表（如 `"wss://relay.damus.io"`） |
-| `Logger` | 结构化日志器 |
+| Field | Description |
+|-------|-------------|
+| `Name` | Agent display name |
+| `ServerURL` | peerclaw-server address |
+| `Capabilities` | List of capabilities (e.g., `"chat"`, `"search"`) |
+| `Protocols` | Supported protocols (e.g., `"a2a"`, `"mcp"`) |
+| `KeypairPath` | Path to the keypair file (if empty, a new keypair is generated each run) |
+| `TrustStorePath` | Path to the trust store file |
+| `NostrRelays` | List of Nostr relay URLs (e.g., `"wss://relay.damus.io"`) |
+| `Logger` | Structured logger |
 
-## 安全模型
+## Security Model
 
-PeerClaw 采用三层安全架构：
+PeerClaw employs a multi-layered security architecture:
 
-### 1. 连接级 — TOFU (Trust-On-First-Use)
+### 1. Connection Level — TOFU (Trust-On-First-Use)
 
-首次连接时记录对端公钥指纹到本地 Trust Store。后续连接自动校验公钥是否一致，检测中间人攻击。
+On first connection, the peer's public key fingerprint is recorded in the local Trust Store. Subsequent connections automatically verify key consistency to detect man-in-the-middle attacks.
 
-### 2. 消息级 — Ed25519 签名
+### 2. Message Level — Ed25519 Signing
 
-每条消息使用发送方私钥签名。接收方使用发送方公钥验证签名，确保消息未被篡改且来源可信。
+Every message is signed with the sender's private key. The receiver verifies the signature using the sender's public key, ensuring the message has not been tampered with and its origin is authentic.
 
-### 3. 传输级 — 端到端加密
+### 3. Transport Level — End-to-End Encryption
 
-信令握手阶段交换 X25519 公钥，通过 ECDH 计算共享密钥，使用 XChaCha20-Poly1305 加密消息 Payload。Nostr 传输额外使用 NIP-44 格式封装。
+X25519 public keys are exchanged during the signaling handshake. A shared secret is derived via ECDH and used with XChaCha20-Poly1305 to encrypt message payloads. Nostr transport additionally wraps messages in NIP-44 format.
 
-### 4. 执行级 — 沙箱
+### 4. Execution Level — Sandboxing
 
-对外部 Agent 的请求实施权限约束和资源限制，防止恶意操作。
+Requests from external Agents are subject to permission constraints and resource limits to prevent malicious operations.
 
 ## Trust CLI
 
-`peerclaw-trust` 命令行工具管理信任条目：
+The `peerclaw-trust` command-line tool manages trust entries:
 
 ```bash
-peerclaw-trust list -store trust.json          # 列出所有信任条目
-peerclaw-trust verify -store trust.json -id <agent-id>  # 升级为 Verified
-peerclaw-trust pin -store trust.json -id <agent-id>     # 固定信任（Pinned）
-peerclaw-trust revoke -store trust.json -id <agent-id>  # 撤销信任
-peerclaw-trust export -store trust.json -out backup.json # 导出
-peerclaw-trust import -store trust.json -in backup.json  # 导入
+peerclaw-trust list -store trust.json          # List all trust entries
+peerclaw-trust verify -store trust.json -id <agent-id>  # Upgrade to Verified
+peerclaw-trust pin -store trust.json -id <agent-id>     # Pin trust (Pinned)
+peerclaw-trust revoke -store trust.json -id <agent-id>  # Revoke trust
+peerclaw-trust export -store trust.json -out backup.json # Export
+peerclaw-trust import -store trust.json -in backup.json  # Import
 ```
 
 ## License
