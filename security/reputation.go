@@ -118,6 +118,31 @@ func (rs *ReputationStore) ListEntries() []ReputationEntry {
 	return result
 }
 
+// SetScore sets the reputation score for a peer in a thread-safe manner.
+// This is the safe way to update scores from external sources (e.g., gossip).
+func (rs *ReputationStore) SetScore(pubKey string, score float64) {
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	entry, exists := rs.entries[pubKey]
+	if !exists {
+		entry = &ReputationEntry{
+			PubKey: pubKey,
+			Score:  0.5,
+		}
+		rs.entries[pubKey] = entry
+	}
+	entry.Score = score
+	entry.LastUpdated = time.Now().UTC()
+}
+
 // GetEntry returns the full reputation entry for a peer, or nil if not found.
 func (rs *ReputationStore) GetEntry(pubKey string) *ReputationEntry {
 	rs.mu.RLock()

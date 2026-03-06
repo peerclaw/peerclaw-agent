@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -15,6 +16,9 @@ const (
 
 	// MaxCachePerDest is the maximum number of messages cached per destination.
 	MaxCachePerDest = 100
+
+	// MaxCacheGlobal is the maximum total number of cached messages across all destinations.
+	MaxCacheGlobal = 10000
 )
 
 // cachedMessage wraps an envelope with expiration metadata.
@@ -40,9 +44,19 @@ func NewMessageCache() *MessageCache {
 }
 
 // Enqueue adds a message to the cache for a destination.
-func (mc *MessageCache) Enqueue(destination string, env *envelope.Envelope) {
+// Returns an error if the global cache limit is exceeded.
+func (mc *MessageCache) Enqueue(destination string, env *envelope.Envelope) error {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
+
+	// Check global limit.
+	total := 0
+	for _, q := range mc.queues {
+		total += len(q)
+	}
+	if total >= MaxCacheGlobal {
+		return fmt.Errorf("message cache global limit reached (%d)", MaxCacheGlobal)
+	}
 
 	now := time.Now().UTC()
 	msg := cachedMessage{
@@ -59,6 +73,7 @@ func (mc *MessageCache) Enqueue(destination string, env *envelope.Envelope) {
 	}
 
 	mc.queues[destination] = append(queue, msg)
+	return nil
 }
 
 // Flush returns and removes all cached messages for a destination.

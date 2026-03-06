@@ -83,19 +83,8 @@ func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 	currentScore := rg.store.GetScore(claim.Subject)
 	weightedScore := currentScore*(1-SecondHandReputationWeight) + claim.Score*SecondHandReputationWeight
 
-	// Directly update the entry.
-	rg.store.mu.Lock()
-	entry, exists := rg.store.entries[claim.Subject]
-	if !exists {
-		entry = &ReputationEntry{
-			PubKey: claim.Subject,
-			Score:  0.5,
-		}
-		rg.store.entries[claim.Subject] = entry
-	}
-	entry.Score = weightedScore
-	entry.LastUpdated = time.Now().UTC()
-	rg.store.mu.Unlock()
+	// Use thread-safe SetScore instead of directly accessing internal fields.
+	rg.store.SetScore(claim.Subject, weightedScore)
 
 	return true
 }

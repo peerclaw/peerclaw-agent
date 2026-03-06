@@ -22,6 +22,7 @@ type RPCMessage struct {
 	Target    NodeID          `json:"target,omitempty"`    // For find_node/find_value
 	Key       string          `json:"key,omitempty"`       // For store/find_value
 	Value     json.RawMessage `json:"value,omitempty"`     // For store
+	Signature string          `json:"signature,omitempty"`
 }
 
 // RPCResponse is a DHT RPC response.
@@ -32,4 +33,25 @@ type RPCResponse struct {
 	Value     json.RawMessage `json:"value,omitempty"`     // For find_value
 	Found     bool            `json:"found,omitempty"`     // For find_value
 	Error     string          `json:"error,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+}
+
+// SigningPayload returns the RPCMessage serialized without the Signature field,
+// suitable for signing and verification.
+func (m RPCMessage) SigningPayload() []byte {
+	sig := m.Signature
+	m.Signature = ""
+	data, _ := json.Marshal(m)
+	m.Signature = sig
+	return data
+}
+
+// SigningPayload returns the RPCResponse serialized without the Signature field,
+// suitable for signing and verification.
+func (r RPCResponse) SigningPayload() []byte {
+	sig := r.Signature
+	r.Signature = ""
+	data, _ := json.Marshal(r)
+	r.Signature = sig
+	return data
 }

@@ -1,6 +1,7 @@
 package dht
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -21,9 +22,12 @@ type bucket struct {
 
 // RoutingTable is a Kademlia routing table with BucketCount k-buckets.
 type RoutingTable struct {
-	mu      sync.RWMutex
-	self    NodeID
-	buckets [BucketCount]bucket
+	mu            sync.RWMutex
+	self          NodeID
+	buckets       [BucketCount]bucket
+	pingFn        func(ctx context.Context, node NodeInfo) bool
+	powRequired   bool
+	powDifficulty int
 }
 
 // NewRoutingTable creates a routing table for the given node.
@@ -36,9 +40,25 @@ func (rt *RoutingTable) SelfID() NodeID {
 	return rt.self
 }
 
+// SetPingFunc sets the function used to ping nodes when a bucket is full.
+func (rt *RoutingTable) SetPingFunc(fn func(ctx context.Context, node NodeInfo) bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.pingFn = fn
+}
+
+// SetPoWRequired enables or disables proof-of-work validation for new nodes.
+func (rt *RoutingTable) SetPoWRequired(required bool, difficulty int) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.powRequired = required
+	rt.powDifficulty = difficulty
+}
+
 // AddNode inserts or updates a node in the routing table.
-// If the appropriate bucket is full, the node is silently dropped
-// (in a full implementation, the least-recently-seen node would be pinged).
+// If PoW is required, the node must present a valid proof-of-work.
+// If the appropriate bucket is full, the least-recently-seen node is pinged;
+// if it does not respond, it is evicted and the new node is inserted.
 func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 	if node.ID == rt.self {
 		return false
@@ -50,7 +70,14 @@ func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 	}
 
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
+
+	// Check PoW requirement before inserting.
+	if rt.powRequired {
+		if !ValidatePoW(node.PublicKey, node.Nonce, rt.powDifficulty) {
+			rt.mu.Unlock()
+			return false
+		}
+	}
 
 	b := &rt.buckets[idx]
 
@@ -60,6 +87,7 @@ func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 			b.nodes = append(b.nodes[:i], b.nodes[i+1:]...)
 			node.LastSeen = time.Now().UTC()
 			b.nodes = append(b.nodes, node)
+			rt.mu.Unlock()
 			return true
 		}
 	}
@@ -68,10 +96,37 @@ func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 	if len(b.nodes) < K {
 		node.LastSeen = time.Now().UTC()
 		b.nodes = append(b.nodes, node)
+		rt.mu.Unlock()
 		return true
 	}
 
-	// Bucket full: drop new node (simplified; real Kademlia pings LRS node).
+	// Bucket full: ping LRS (least recently seen, first node in bucket).
+	lrsNode := b.nodes[0]
+	pingFn := rt.pingFn
+	rt.mu.Unlock()
+
+	if pingFn != nil {
+		alive := pingFn(context.Background(), lrsNode)
+		if !alive {
+			// LRS did not respond; evict it and insert new node.
+			rt.mu.Lock()
+			b = &rt.buckets[idx]
+			// Re-check that the LRS node is still the first node.
+			if len(b.nodes) > 0 && b.nodes[0].ID == lrsNode.ID {
+				b.nodes = b.nodes[1:]
+				node.LastSeen = time.Now().UTC()
+				b.nodes = append(b.nodes, node)
+				rt.mu.Unlock()
+				return true
+			}
+			rt.mu.Unlock()
+			return false
+		}
+		// LRS responded; reject new node.
+		return false
+	}
+
+	// No ping function: drop new node (legacy behavior).
 	return false
 }
 

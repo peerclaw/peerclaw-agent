@@ -1,7 +1,11 @@
 package identity
 
 import (
+	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
+
+	pcidentity "github.com/peerclaw/peerclaw-core/identity"
 )
 
 // RecoveryConfig holds the configuration for identity recovery.
@@ -43,10 +47,21 @@ type RecoveryRequest struct {
 }
 
 // ValidateRecovery checks if a recovery request has enough valid signatures.
-// It verifies that at least `threshold` of the configured recovery keys have signed.
+// It verifies that at least `threshold` of the configured recovery keys have signed
+// the recovery data (old_pub_key + new_pub_key).
 func (rm *RecoveryManager) ValidateRecovery(req RecoveryRequest) (bool, error) {
 	if req.OldPubKey == "" || req.NewPubKey == "" {
 		return false, fmt.Errorf("old_pub_key and new_pub_key are required")
+	}
+
+	// Build the data that must be signed by recovery keys.
+	recoveryData, err := json.Marshal(map[string]string{
+		"old_pub_key": req.OldPubKey,
+		"new_pub_key": req.NewPubKey,
+		"purpose":     "peerclaw-identity-recovery",
+	})
+	if err != nil {
+		return false, fmt.Errorf("marshal recovery data: %w", err)
 	}
 
 	validCount := 0
@@ -55,15 +70,23 @@ func (rm *RecoveryManager) ValidateRecovery(req RecoveryRequest) (bool, error) {
 		recoveryKeySet[k] = true
 	}
 
-	for signerKey := range req.Signatures {
-		if recoveryKeySet[signerKey] {
-			// In production, verify the signature here.
-			validCount++
+	for signerKey, signature := range req.Signatures {
+		if !recoveryKeySet[signerKey] {
+			continue
 		}
+		// Parse the signer's public key and verify the signature.
+		pubKey, err := pcidentity.ParsePublicKey(signerKey)
+		if err != nil {
+			continue
+		}
+		if err := pcidentity.Verify(ed25519.PublicKey(pubKey), recoveryData, signature); err != nil {
+			continue
+		}
+		validCount++
 	}
 
 	if validCount < rm.config.Threshold {
-		return false, fmt.Errorf("insufficient recovery signatures: %d/%d (need %d)",
+		return false, fmt.Errorf("insufficient valid recovery signatures: %d/%d (need %d)",
 			validCount, len(rm.config.RecoveryKeys), rm.config.Threshold)
 	}
 

@@ -91,5 +91,6 @@ type NodeInfo struct {
 	PublicKey string    `json:"public_key"`
 	Address   string    `json:"address,omitempty"`
 	Relays    []string  `json:"relays,omitempty"`
+	Nonce     uint64    `json:"nonce,omitempty"`
 	LastSeen  time.Time `json:"last_seen"`
 }

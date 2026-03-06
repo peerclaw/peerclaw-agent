@@ -143,7 +143,7 @@ func TestDHTLocalStore(t *testing.T) {
 	dhtA := NewDHT(nodeA, tA, nil)
 
 	// Store locally.
-	dhtA.LocalStore().Put("local-key", []byte("local-value"), DefaultTTL)
+	dhtA.LocalStore().Put("local-key", []byte("local-value"), DefaultTTL, nodeA.PublicKey)
 
 	ctx := context.Background()
 	val, err := dhtA.Get(ctx, "local-key")

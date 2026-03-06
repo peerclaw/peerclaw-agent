@@ -3,6 +3,8 @@ package identity
 import (
 	"context"
 	"testing"
+
+	pcidentity "github.com/peerclaw/peerclaw-core/identity"
 )
 
 func TestNostrAnchorPublish(t *testing.T) {
@@ -51,11 +53,23 @@ func TestNostrAnchorVerify(t *testing.T) {
 	na := NewNostrAnchor(nil)
 	ctx := context.Background()
 
+	// Generate a real Ed25519 keypair for testing.
+	kp, err := pcidentity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	pubKeyStr := kp.PublicKeyString()
+	anchorID := "npub1test"
+
+	// Create the binding data and sign it.
+	bindingData := CreateBindingData(pubKeyStr, anchorID)
+	signature := pcidentity.Sign(kp.PrivateKey, bindingData)
+
 	anchor := Anchor{
-		PubKey:           "test-pubkey",
+		PubKey:           pubKeyStr,
 		AnchorType:       "nostr",
-		AnchorID:         "npub1test",
-		Ed25519Signature: "test-sig",
+		AnchorID:         anchorID,
+		Ed25519Signature: signature,
 	}
 
 	valid, err := na.Verify(ctx, anchor)
@@ -64,6 +78,32 @@ func TestNostrAnchorVerify(t *testing.T) {
 	}
 	if !valid {
 		t.Error("expected anchor to be valid")
+	}
+}
+
+func TestNostrAnchorVerifyBadSignature(t *testing.T) {
+	na := NewNostrAnchor(nil)
+	ctx := context.Background()
+
+	kp, err := pcidentity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
+	// Use a valid public key but an incorrect signature.
+	anchor := Anchor{
+		PubKey:           kp.PublicKeyString(),
+		AnchorType:       "nostr",
+		AnchorID:         "npub1test",
+		Ed25519Signature: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	}
+
+	valid, err := na.Verify(ctx, anchor)
+	if err == nil {
+		t.Error("expected error for bad signature")
+	}
+	if valid {
+		t.Error("expected anchor to be invalid")
 	}
 }
 

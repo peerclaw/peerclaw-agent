@@ -227,8 +227,12 @@ func TestMessageCacheFlushOnPeerConnect(t *testing.T) {
 	// Cache some messages for a peer.
 	env1 := makeTestEnvelope("peer-1", "cached-1")
 	env2 := makeTestEnvelope("peer-1", "cached-2")
-	mc.Enqueue("peer-1", env1)
-	mc.Enqueue("peer-1", env2)
+	if err := mc.Enqueue("peer-1", env1); err != nil {
+		t.Fatalf("Enqueue env1: %v", err)
+	}
+	if err := mc.Enqueue("peer-1", env2); err != nil {
+		t.Fatalf("Enqueue env2: %v", err)
+	}
 
 	if mc.PendingCount("peer-1") != 2 {
 		t.Fatalf("expected 2 pending, got %d", mc.PendingCount("peer-1"))

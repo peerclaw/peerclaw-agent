@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,12 +14,19 @@ func makeTestEnvelope(dest, content string) *envelope.Envelope {
 	return envelope.New("self", dest, protocol.ProtocolA2A, []byte(content))
 }
 
+func mustEnqueue(t *testing.T, mc *MessageCache, dest string, env *envelope.Envelope) {
+	t.Helper()
+	if err := mc.Enqueue(dest, env); err != nil {
+		t.Fatalf("Enqueue(%s) failed: %v", dest, err)
+	}
+}
+
 func TestMessageCacheEnqueueFlush(t *testing.T) {
 	mc := NewMessageCache()
 
-	mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "hello"))
-	mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "world"))
-	mc.Enqueue("peer-2", makeTestEnvelope("peer-2", "other"))
+	mustEnqueue(t, mc, "peer-1", makeTestEnvelope("peer-1", "hello"))
+	mustEnqueue(t, mc, "peer-1", makeTestEnvelope("peer-1", "world"))
+	mustEnqueue(t, mc, "peer-2", makeTestEnvelope("peer-2", "other"))
 
 	if mc.PendingCount("peer-1") != 2 {
 		t.Errorf("expected 2 pending for peer-1, got %d", mc.PendingCount("peer-1"))
@@ -47,7 +55,7 @@ func TestMessageCacheExpiration(t *testing.T) {
 	mc := NewMessageCache()
 	mc.ttl = 10 * time.Millisecond
 
-	mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "expires"))
+	mustEnqueue(t, mc, "peer-1", makeTestEnvelope("peer-1", "expires"))
 	time.Sleep(20 * time.Millisecond)
 
 	// Flush should return empty (expired).
@@ -61,11 +69,11 @@ func TestMessageCacheCleanExpired(t *testing.T) {
 	mc := NewMessageCache()
 	mc.ttl = 10 * time.Millisecond
 
-	mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "old"))
+	mustEnqueue(t, mc, "peer-1", makeTestEnvelope("peer-1", "old"))
 	time.Sleep(20 * time.Millisecond)
 
 	mc.ttl = DefaultCacheTTL
-	mc.Enqueue("peer-2", makeTestEnvelope("peer-2", "new"))
+	mustEnqueue(t, mc, "peer-2", makeTestEnvelope("peer-2", "new"))
 
 	removed := mc.CleanExpired()
 	if removed != 1 {
@@ -80,7 +88,7 @@ func TestMessageCacheMaxPerDest(t *testing.T) {
 	mc := NewMessageCache()
 
 	for i := 0; i < MaxCachePerDest+10; i++ {
-		mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "msg"))
+		_ = mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "msg"))
 	}
 
 	if mc.PendingCount("peer-1") != MaxCachePerDest {
@@ -90,8 +98,8 @@ func TestMessageCacheMaxPerDest(t *testing.T) {
 
 func TestMessageCacheDestinations(t *testing.T) {
 	mc := NewMessageCache()
-	mc.Enqueue("peer-1", makeTestEnvelope("peer-1", "a"))
-	mc.Enqueue("peer-2", makeTestEnvelope("peer-2", "b"))
+	mustEnqueue(t, mc, "peer-1", makeTestEnvelope("peer-1", "a"))
+	mustEnqueue(t, mc, "peer-2", makeTestEnvelope("peer-2", "b"))
 
 	dests := mc.Destinations()
 	if len(dests) != 2 {
@@ -104,7 +112,7 @@ func TestMessageCachePersistence(t *testing.T) {
 	path := filepath.Join(dir, "cache.json")
 
 	mc1 := NewMessageCache()
-	mc1.Enqueue("peer-1", makeTestEnvelope("peer-1", "cached-msg"))
+	mustEnqueue(t, mc1, "peer-1", makeTestEnvelope("peer-1", "cached-msg"))
 
 	if err := mc1.SaveToFile(path); err != nil {
 		t.Fatal(err)
@@ -117,6 +125,26 @@ func TestMessageCachePersistence(t *testing.T) {
 
 	if mc2.PendingCount("peer-1") != 1 {
 		t.Errorf("expected 1 pending after load, got %d", mc2.PendingCount("peer-1"))
+	}
+}
+
+func TestMessageCacheGlobalLimit(t *testing.T) {
+	mc := NewMessageCache()
+
+	// Fill up to the global limit across multiple destinations.
+	for i := 0; i < MaxCacheGlobal; i++ {
+		dest := fmt.Sprintf("peer-%d", i%200) // spread across 200 peers
+		_ = mc.Enqueue(dest, makeTestEnvelope(dest, "msg"))
+	}
+
+	if mc.TotalPending() != MaxCacheGlobal {
+		t.Errorf("expected %d total pending, got %d", MaxCacheGlobal, mc.TotalPending())
+	}
+
+	// Next enqueue should fail.
+	err := mc.Enqueue("overflow-peer", makeTestEnvelope("overflow-peer", "too-many"))
+	if err == nil {
+		t.Error("expected error when global limit exceeded")
 	}
 }
 

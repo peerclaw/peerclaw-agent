@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	coreidentity "github.com/peerclaw/peerclaw-core/identity"
 )
 
 const (
@@ -29,17 +30,19 @@ type DHT struct {
 	table     *RoutingTable
 	store     *Store
 	transport DHTTransport
+	keypair   *coreidentity.Keypair
 	logger    *slog.Logger
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
 }
 
-// NewDHT creates a new DHT node.
-func NewDHT(self NodeInfo, transport DHTTransport, logger *slog.Logger) *DHT {
+// NewDHT creates a new DHT node. An optional keypair can be provided for
+// message signing and verification.
+func NewDHT(self NodeInfo, transport DHTTransport, logger *slog.Logger, keypair ...*coreidentity.Keypair) *DHT {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &DHT{
+	d := &DHT{
 		self:      self,
 		table:     NewRoutingTable(self.ID),
 		store:     NewStore(),
@@ -47,6 +50,34 @@ func NewDHT(self NodeInfo, transport DHTTransport, logger *slog.Logger) *DHT {
 		logger:    logger,
 		stopCh:    make(chan struct{}),
 	}
+	if len(keypair) > 0 && keypair[0] != nil {
+		d.keypair = keypair[0]
+	}
+	return d
+}
+
+// signMessage signs an RPCMessage using the DHT node's keypair.
+// If no keypair is configured, the message is returned unsigned.
+func (d *DHT) signMessage(msg *RPCMessage) {
+	if d.keypair == nil {
+		return
+	}
+	payload := msg.SigningPayload()
+	msg.Signature = coreidentity.Sign(d.keypair.PrivateKey, payload)
+}
+
+// verifyMessage verifies the signature on an incoming RPCMessage.
+// Returns an error if the signature is invalid. If no signature is present, it passes.
+func (d *DHT) verifyMessage(msg *RPCMessage) error {
+	if msg.Signature == "" {
+		return nil // No signature to verify.
+	}
+	pubKey, err := coreidentity.ParsePublicKey(msg.Sender.PublicKey)
+	if err != nil {
+		return fmt.Errorf("parse sender public key: %w", err)
+	}
+	payload := msg.SigningPayload()
+	return coreidentity.Verify(pubKey, payload, msg.Signature)
 }
 
 // Self returns the local node's info.
@@ -116,7 +147,9 @@ func (d *DHT) Stop() error {
 // k closest nodes to the key.
 func (d *DHT) Put(ctx context.Context, key string, value []byte) error {
 	// Store locally.
-	d.store.Put(key, value, DefaultTTL)
+	if err := d.store.Put(key, value, DefaultTTL, d.self.PublicKey); err != nil {
+		return err
+	}
 
 	// Find closest nodes to key.
 	keyID := NodeIDFromPublicKey(key)
@@ -131,6 +164,7 @@ func (d *DHT) Put(ctx context.Context, key string, value []byte) error {
 			Key:       key,
 			Value:     json.RawMessage(value),
 		}
+		d.signMessage(&msg)
 		go func(n NodeInfo) {
 			_, err := d.transport.SendRPC(ctx, n, msg)
 			if err != nil {
@@ -169,6 +203,7 @@ func (d *DHT) Get(ctx context.Context, key string) ([]byte, error) {
 			Key:       key,
 			Target:    keyID,
 		}
+		d.signMessage(&msg)
 
 		resp, err := d.transport.SendRPC(ctx, node, msg)
 		if err != nil {
@@ -179,7 +214,7 @@ func (d *DHT) Get(ctx context.Context, key string) ([]byte, error) {
 
 		if resp.Found && resp.Value != nil {
 			// Cache locally.
-			d.store.Put(key, resp.Value, DefaultTTL)
+			d.store.Put(key, resp.Value, DefaultTTL, d.self.PublicKey)
 			return resp.Value, nil
 		}
 
@@ -213,6 +248,7 @@ func (d *DHT) FindNode(ctx context.Context, target NodeID) ([]NodeInfo, error) {
 			Sender:    d.self,
 			Target:    target,
 		}
+		d.signMessage(&msg)
 
 		resp, err := d.transport.SendRPC(ctx, node, msg)
 		if err != nil {
@@ -253,6 +289,20 @@ func (d *DHT) handleRPCs(ctx context.Context, inbox <-chan RPCMessage) {
 }
 
 func (d *DHT) handleRPC(ctx context.Context, msg RPCMessage) {
+	// Verify message signature before processing.
+	if err := d.verifyMessage(&msg); err != nil {
+		d.logger.Warn("RPC message signature verification failed", "sender", msg.Sender.ID.Hex(), "error", err)
+		resp := RPCResponse{
+			RequestID: msg.RequestID,
+			Sender:    d.self,
+			Error:     "invalid message signature",
+		}
+		if t, ok := d.transport.(*InMemoryTransport); ok {
+			t.DeliverResponse(msg.Sender, &resp)
+		}
+		return
+	}
+
 	// Update routing table with sender.
 	d.table.AddNode(msg.Sender)
 
@@ -267,7 +317,9 @@ func (d *DHT) handleRPC(ctx context.Context, msg RPCMessage) {
 
 	case RPCStore:
 		if msg.Key != "" && msg.Value != nil {
-			d.store.Put(msg.Key, msg.Value, DefaultTTL)
+			if err := d.store.Put(msg.Key, msg.Value, DefaultTTL, msg.Sender.PublicKey); err != nil {
+				resp.Error = err.Error()
+			}
 		}
 
 	case RPCFindNode:

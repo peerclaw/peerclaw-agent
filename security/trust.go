@@ -41,6 +41,9 @@ func TrustLevelString(level TrustLevel) string {
 // TrustChangeCallback is called when a trust entry changes.
 type TrustChangeCallback func(pubKey string, oldLevel, newLevel TrustLevel)
 
+// DefaultTOFUExpiry is the default duration after which a TOFU trust entry expires.
+const DefaultTOFUExpiry = 30 * 24 * time.Hour // 30 days
+
 // TrustEntry records trust information about a peer.
 type TrustEntry struct {
 	PublicKey string     `json:"public_key"`
@@ -48,6 +51,7 @@ type TrustEntry struct {
 	FirstSeen string     `json:"first_seen"`
 	LastSeen  string     `json:"last_seen,omitempty"`
 	Alias     string     `json:"alias,omitempty"`
+	ExpiresAt time.Time  `json:"expires_at,omitempty"`
 }
 
 // TrustStore manages TOFU trust relationships with peers.
@@ -73,6 +77,7 @@ func (ts *TrustStore) OnTrustChange(cb TrustChangeCallback) {
 }
 
 // Check returns the trust level for a public key.
+// If the entry is a TOFU entry that has expired, TrustUnknown is returned.
 func (ts *TrustStore) Check(pubKey string) TrustLevel {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
@@ -81,10 +86,15 @@ func (ts *TrustStore) Check(pubKey string) TrustLevel {
 	if !ok {
 		return TrustUnknown
 	}
+	// Only TOFU entries can expire; Verified, Pinned, and Blocked do not expire.
+	if entry.Level == TrustTOFU && !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
+		return TrustUnknown
+	}
 	return entry.Level
 }
 
 // TrustOnFirstUse records a new peer with TOFU trust if not already known.
+// The TOFU entry expires after DefaultTOFUExpiry (30 days).
 // Returns the trust level (existing or newly created).
 func (ts *TrustStore) TrustOnFirstUse(pubKey, firstSeen string) TrustLevel {
 	ts.mu.Lock()
@@ -94,9 +104,10 @@ func (ts *TrustStore) TrustOnFirstUse(pubKey, firstSeen string) TrustLevel {
 		return entry.Level
 	}
 	ts.trusted[pubKey] = TrustEntry{
-		PublicKey: pubKey,
+		PublicKey:  pubKey,
 		Level:     TrustTOFU,
 		FirstSeen: firstSeen,
+		ExpiresAt: time.Now().Add(DefaultTOFUExpiry),
 	}
 	if ts.onTrustChange != nil {
 		ts.onTrustChange(pubKey, TrustUnknown, TrustTOFU)
@@ -176,6 +187,24 @@ func (ts *TrustStore) RemoveEntry(pubKey string) bool {
 		ts.onTrustChange(pubKey, entry.Level, TrustUnknown)
 	}
 	return true
+}
+
+// CleanExpired removes expired TOFU entries from the store.
+// Only TOFU entries are subject to expiration; entries at TrustVerified
+// or higher (including TrustBlocked and TrustPinned) are never removed.
+func (ts *TrustStore) CleanExpired() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	now := time.Now()
+	for key, entry := range ts.trusted {
+		if entry.Level == TrustTOFU && !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(ts.trusted, key)
+			if ts.onTrustChange != nil {
+				ts.onTrustChange(key, entry.Level, TrustUnknown)
+			}
+		}
+	}
 }
 
 // Export serializes all entries to JSON bytes.

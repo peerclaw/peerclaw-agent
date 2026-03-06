@@ -2,9 +2,12 @@ package identity
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"time"
+
+	pcidentity "github.com/peerclaw/peerclaw-core/identity"
 )
 
 // NostrAnchorKind is the Nostr replaceable event kind for identity anchors.
@@ -56,7 +59,7 @@ func (na *NostrAnchor) Publish(ctx context.Context, anchor Anchor) (string, erro
 }
 
 // Verify checks if a Nostr identity anchor is valid.
-// It verifies both the Ed25519 and Nostr signatures in the bidirectional binding.
+// It verifies the Ed25519 signature over the bidirectional binding data.
 func (na *NostrAnchor) Verify(ctx context.Context, anchor Anchor) (bool, error) {
 	if anchor.AnchorType != "nostr" {
 		return false, fmt.Errorf("unsupported anchor type: %s", anchor.AnchorType)
@@ -68,11 +71,18 @@ func (na *NostrAnchor) Verify(ctx context.Context, anchor Anchor) (bool, error) 
 		return false, fmt.Errorf("ed25519_signature is required")
 	}
 
-	// In production, this would:
-	// 1. Verify Ed25519 signature over the binding data
-	// 2. Fetch the Nostr event from relays
-	// 3. Verify the Nostr event signature
-	// 4. Check that both signatures bind the same keys
+	// Parse the Ed25519 public key.
+	pubKey, err := pcidentity.ParsePublicKey(anchor.PubKey)
+	if err != nil {
+		return false, fmt.Errorf("parse public key: %w", err)
+	}
+
+	// Verify Ed25519 signature over the binding data.
+	bindingData := CreateBindingData(anchor.PubKey, anchor.AnchorID)
+	if err := pcidentity.Verify(ed25519.PublicKey(pubKey), bindingData, anchor.Ed25519Signature); err != nil {
+		return false, fmt.Errorf("ed25519 signature verification failed: %w", err)
+	}
+
 	return true, nil
 }
 

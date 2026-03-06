@@ -15,7 +15,9 @@ func TestStoreBasic(t *testing.T) {
 	}
 
 	// Put and get.
-	s.Put("key1", []byte("value1"), DefaultTTL)
+	if err := s.Put("key1", []byte("value1"), DefaultTTL, "peer1"); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
 	v := s.Get("key1")
 	if string(v) != "value1" {
 		t.Errorf("expected 'value1', got %q", string(v))
@@ -33,7 +35,9 @@ func TestStoreBasic(t *testing.T) {
 func TestStoreExpiration(t *testing.T) {
 	s := NewStore()
 
-	s.Put("short", []byte("value"), 10*time.Millisecond)
+	if err := s.Put("short", []byte("value"), 10*time.Millisecond, "peer1"); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
 	time.Sleep(20 * time.Millisecond)
 
 	if v := s.Get("short"); v != nil {
@@ -43,7 +47,7 @@ func TestStoreExpiration(t *testing.T) {
 
 func TestStoreDelete(t *testing.T) {
 	s := NewStore()
-	s.Put("key", []byte("val"), DefaultTTL)
+	s.Put("key", []byte("val"), DefaultTTL, "peer1")
 	s.Delete("key")
 
 	if s.Has("key") {
@@ -53,9 +57,9 @@ func TestStoreDelete(t *testing.T) {
 
 func TestStoreKeys(t *testing.T) {
 	s := NewStore()
-	s.Put("a", []byte("1"), DefaultTTL)
-	s.Put("b", []byte("2"), DefaultTTL)
-	s.Put("c", []byte("3"), DefaultTTL)
+	s.Put("a", []byte("1"), DefaultTTL, "peer1")
+	s.Put("b", []byte("2"), DefaultTTL, "peer1")
+	s.Put("c", []byte("3"), DefaultTTL, "peer1")
 
 	keys := s.Keys()
 	if len(keys) != 3 {
@@ -65,8 +69,8 @@ func TestStoreKeys(t *testing.T) {
 
 func TestStoreCleanExpired(t *testing.T) {
 	s := NewStore()
-	s.Put("keep", []byte("val"), DefaultTTL)
-	s.Put("expire", []byte("val"), 10*time.Millisecond)
+	s.Put("keep", []byte("val"), DefaultTTL, "peer1")
+	s.Put("expire", []byte("val"), 10*time.Millisecond, "peer1")
 
 	time.Sleep(20 * time.Millisecond)
 	removed := s.CleanExpired()
@@ -83,8 +87,8 @@ func TestStorePersistence(t *testing.T) {
 	path := filepath.Join(dir, "dht_store.json")
 
 	s1 := NewStore()
-	s1.Put("key1", []byte("value1"), DefaultTTL)
-	s1.Put("key2", []byte("value2"), DefaultTTL)
+	s1.Put("key1", []byte("value1"), DefaultTTL, "peer1")
+	s1.Put("key2", []byte("value2"), DefaultTTL, "peer1")
 
 	if err := s1.SaveToFile(path); err != nil {
 		t.Fatal(err)
@@ -107,5 +111,73 @@ func TestStoreLoadNonexistent(t *testing.T) {
 	s := NewStore()
 	if err := s.LoadFromFile("/nonexistent/path"); err != nil {
 		t.Errorf("expected nil error for nonexistent file, got %v", err)
+	}
+}
+
+func TestStoreMaxValueSize(t *testing.T) {
+	s := NewStore(WithMaxValueSize(10))
+
+	err := s.Put("key", []byte("short"), DefaultTTL, "peer1")
+	if err != nil {
+		t.Fatalf("expected no error for small value, got %v", err)
+	}
+
+	err = s.Put("key2", make([]byte, 11), DefaultTTL, "peer1")
+	if err == nil {
+		t.Error("expected error for oversized value")
+	}
+}
+
+func TestStoreMaxEntries(t *testing.T) {
+	s := NewStore(WithMaxEntries(3))
+
+	s.Put("a", []byte("1"), DefaultTTL, "peer1")
+	s.Put("b", []byte("2"), DefaultTTL, "peer2")
+	s.Put("c", []byte("3"), DefaultTTL, "peer3")
+
+	// Adding a 4th entry should evict the oldest.
+	err := s.Put("d", []byte("4"), DefaultTTL, "peer4")
+	if err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	if s.Size() > 3 {
+		t.Errorf("expected at most 3 entries, got %d", s.Size())
+	}
+}
+
+func TestStorePerPeerQuota(t *testing.T) {
+	s := NewStore(WithMaxPerPeer(2))
+
+	s.Put("a", []byte("1"), DefaultTTL, "peer1")
+	s.Put("b", []byte("2"), DefaultTTL, "peer1")
+
+	err := s.Put("c", []byte("3"), DefaultTTL, "peer1")
+	if err == nil {
+		t.Error("expected error when peer exceeds quota")
+	}
+
+	// Different peer should still be able to store.
+	err = s.Put("c", []byte("3"), DefaultTTL, "peer2")
+	if err != nil {
+		t.Fatalf("expected no error for different peer, got %v", err)
+	}
+}
+
+func TestStoreOptions(t *testing.T) {
+	s := NewStore(
+		WithMaxEntries(100),
+		WithMaxValueSize(1024),
+		WithMaxPerPeer(10),
+	)
+
+	if s.maxEntries != 100 {
+		t.Errorf("expected maxEntries 100, got %d", s.maxEntries)
+	}
+	if s.maxValueSize != 1024 {
+		t.Errorf("expected maxValueSize 1024, got %d", s.maxValueSize)
+	}
+	if s.maxPerPeer != 10 {
+		t.Errorf("expected maxPerPeer 10, got %d", s.maxPerPeer)
 	}
 }
