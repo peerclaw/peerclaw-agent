@@ -1,0 +1,44 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment
+.env
+.env.local
+
+# Private keys / certificates
+*.pem
+*.key
+*.p12
+*.seed
+
+# Database
+*.db
+*.sqlite
+
+# Dependencies
+vendor/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / Coverage
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Logs
+*.log
