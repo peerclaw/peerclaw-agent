@@ -2,7 +2,7 @@
 
 # peerclaw-agent
 
-PeerClaw P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型与消息签名验证。
+[PeerClaw](https://github.com/peerclaw/peerclaw) 身份与信任平台及 Agent Marketplace 的 P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型与消息签名验证。
 
 ## 核心特性
 
