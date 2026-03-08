@@ -183,6 +183,56 @@ type DiscoverResult struct {
 	PublicKey string
 }
 
+// ClaimRegisterer is an optional interface for discovery backends that support
+// claim-token-based registration.
+type ClaimRegisterer interface {
+	ClaimRegister(ctx context.Context, req ClaimRequest) (*agentcard.Card, error)
+}
+
+// ClaimRequest holds the parameters for claim-token-based agent registration.
+type ClaimRequest struct {
+	Token        string            `json:"token"`
+	Name         string            `json:"name"`
+	PublicKey    string            `json:"public_key"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	Protocols    []string          `json:"protocols"`
+	Endpoint     EndpointReq       `json:"endpoint"`
+	Signature    string            `json:"signature"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+// ClaimRegister registers the agent using a claim token.
+// The token itself serves as authentication — no API key or bearer token is needed.
+func (c *RegistryClient) ClaimRegister(ctx context.Context, req ClaimRequest) (*agentcard.Card, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal claim request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/agents/claim", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("claim register: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, c.readError(resp)
+	}
+
+	var card agentcard.Card
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		return nil, fmt.Errorf("decode claim response: %w", err)
+	}
+	c.logger.Info("claimed and registered with platform", "id", card.ID, "name", card.Name)
+	return &card, nil
+}
+
 // Close is a no-op for RegistryClient (satisfies the Discovery interface).
 func (c *RegistryClient) Close() error {
 	return nil

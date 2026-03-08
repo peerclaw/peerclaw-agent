@@ -81,6 +81,11 @@ type Options struct {
 	// IdentityRecoveryKeys lists public keys authorized for identity recovery.
 	IdentityRecoveryKeys []string
 
+	// ClaimToken is a one-time pairing code (e.g., "PCW-XXXX-XXXX") obtained from
+	// the platform. When set, the agent uses the claim flow instead of direct
+	// registration, binding itself to the user who generated the token.
+	ClaimToken string
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
 }
@@ -177,20 +182,52 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.mu.Unlock()
 
 	// Register with the platform.
-	card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
-		Name:         a.opts.Name,
-		PublicKey:    a.keypair.PublicKeyString(),
-		Capabilities: a.opts.Capabilities,
-		Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
-		Protocols:    a.opts.Protocols,
-	})
-	if err != nil {
+	var regErr error
+	if a.opts.ClaimToken != "" {
+		// Claim mode: sign the token and use the claim endpoint.
+		claimer, ok := a.discovery.(discovery.ClaimRegisterer)
+		if !ok {
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+			return fmt.Errorf("discovery backend does not support claim registration")
+		}
+		sig := identity.Sign(a.keypair.PrivateKey, []byte(a.opts.ClaimToken))
+		card, err := claimer.ClaimRegister(ctx, discovery.ClaimRequest{
+			Token:        a.opts.ClaimToken,
+			Name:         a.opts.Name,
+			PublicKey:    a.keypair.PublicKeyString(),
+			Capabilities: a.opts.Capabilities,
+			Protocols:    a.opts.Protocols,
+			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
+			Signature:    sig,
+		})
+		if err != nil {
+			regErr = fmt.Errorf("claim register: %w", err)
+		} else {
+			a.agentID = card.ID
+		}
+	} else {
+		// Standard registration mode.
+		card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
+			Name:         a.opts.Name,
+			PublicKey:    a.keypair.PublicKeyString(),
+			Capabilities: a.opts.Capabilities,
+			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
+			Protocols:    a.opts.Protocols,
+		})
+		if err != nil {
+			regErr = fmt.Errorf("register with platform: %w", err)
+		} else {
+			a.agentID = card.ID
+		}
+	}
+	if regErr != nil {
 		a.mu.Lock()
 		a.running = false
 		a.mu.Unlock()
-		return fmt.Errorf("register with platform: %w", err)
+		return regErr
 	}
-	a.agentID = card.ID
 
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
 	return nil
