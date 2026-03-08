@@ -121,6 +121,12 @@ func (cs *CompositeSignaling) SetBridgeHandler(handler BridgeMessageHandler) {
 	cs.fallback.SetBridgeHandler(handler)
 }
 
+// SetAgentID sets the agent ID on both signaling clients.
+func (cs *CompositeSignaling) SetAgentID(id string) {
+	cs.primary.SetAgentID(id)
+	cs.fallback.SetAgentID(id)
+}
+
 // Close closes both signaling clients.
 func (cs *CompositeSignaling) Close() error {
 	err := cs.primary.Close()

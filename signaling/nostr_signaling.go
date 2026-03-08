@@ -99,6 +99,13 @@ func (ns *NostrSignaling) SetBridgeHandler(handler BridgeMessageHandler) {
 	ns.bridgeHandler = handler
 }
 
+// SetAgentID sets the agent ID for the Nostr signaling client.
+func (ns *NostrSignaling) SetAgentID(id string) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.agentID = id
+}
+
 // Close disconnects from all Nostr relays.
 func (ns *NostrSignaling) Close() error {
 	ns.mu.Lock()

@@ -2,16 +2,21 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
-	"github.com/peerclaw/peerclaw-core/envelope"
-	"github.com/peerclaw/peerclaw-core/identity"
+	"github.com/peerclaw/peerclaw-agent/conn"
 	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
+	"github.com/peerclaw/peerclaw-agent/transport"
+	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
+	pccoresignaling "github.com/peerclaw/peerclaw-core/signaling"
 )
 
 // MessageHandler is called when an incoming envelope is received.
@@ -102,6 +107,8 @@ type Agent struct {
 	msgValidator  *security.MessageValidator
 	sessionKeys   map[string]*security.SessionKey // peer public key -> session key
 	handler       MessageHandler
+	connManager   *conn.Manager
+	msgCache      *transport.MessageCache
 	agentID       string
 	logger        *slog.Logger
 	mu            sync.Mutex
@@ -158,6 +165,15 @@ func New(opts Options) (*Agent, error) {
 		sig = pcsignaling.NewClient(opts.ServerURL, "", logger)
 	}
 
+	// Initialize message cache if configured.
+	var mc *transport.MessageCache
+	if opts.MessageCachePath != "" {
+		mc = transport.NewMessageCache()
+		if err := mc.LoadFromFile(opts.MessageCachePath); err != nil {
+			logger.Warn("failed to load message cache", "error", err)
+		}
+	}
+
 	return &Agent{
 		opts:         opts,
 		keypair:      kp,
@@ -167,6 +183,7 @@ func New(opts Options) (*Agent, error) {
 		trustStore:   ts,
 		msgValidator: security.NewMessageValidator(),
 		sessionKeys:  make(map[string]*security.SessionKey),
+		msgCache:     mc,
 		logger:       logger,
 	}, nil
 }
@@ -229,6 +246,36 @@ func (a *Agent) Start(ctx context.Context) error {
 		return regErr
 	}
 
+	// Set up signaling connection.
+	a.signaling.SetAgentID(a.agentID)
+	if err := a.signaling.Connect(ctx); err != nil {
+		a.logger.Warn("signaling connect failed", "error", err)
+		// Non-fatal — agent can operate without signaling.
+	}
+
+	// Set up bridge message handler for relay-based messaging.
+	a.signaling.SetBridgeHandler(func(payload []byte) {
+		var env envelope.Envelope
+		if err := json.Unmarshal(payload, &env); err != nil {
+			a.logger.Warn("invalid bridge message", "error", err)
+			return
+		}
+		a.HandleIncomingEnvelope(context.Background(), &env)
+	})
+
+	// Start connection orchestrator.
+	x25519Pub, _ := a.keypair.X25519PublicKeyString()
+	a.connManager = conn.New(conn.Config{
+		AgentID:      a.agentID,
+		Signaling:    a.signaling,
+		PeerManager:  a.peerManager,
+		MsgHandler:   a.HandleIncomingEnvelope,
+		X25519PubKey: x25519Pub,
+		OnSession:    a.EstablishSession,
+		Logger:       a.logger,
+	})
+	a.connManager.Start(ctx)
+
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
 	return nil
 }
@@ -250,6 +297,18 @@ func (a *Agent) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop connection orchestrator.
+	if a.connManager != nil {
+		a.connManager.Stop()
+	}
+
+	// Save message cache.
+	if a.msgCache != nil && a.opts.MessageCachePath != "" {
+		if err := a.msgCache.SaveToFile(a.opts.MessageCachePath); err != nil {
+			a.logger.Warn("failed to save message cache", "error", err)
+		}
+	}
+
 	// Save trust store.
 	if a.opts.TrustStorePath != "" {
 		if err := a.trustStore.SaveToFile(a.opts.TrustStorePath); err != nil {
@@ -265,7 +324,7 @@ func (a *Agent) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send sends an envelope to a connected peer.
+// Send sends an envelope to a peer using P2P (preferred) or signaling relay (fallback).
 // The payload is signed, then encrypted if a session key exists for the peer.
 func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	// Sign the envelope payload.
@@ -290,7 +349,40 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 		env.SenderX25519 = x25519Pub
 	}
 
-	return a.peerManager.Send(ctx, env.Destination, env)
+	// 1. Try existing P2P connection.
+	if err := a.peerManager.Send(ctx, env.Destination, env); err == nil {
+		return nil
+	}
+
+	// 2. Try establishing a new P2P connection.
+	if a.connManager != nil {
+		connCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := a.connManager.Connect(connCtx, env.Destination); err == nil {
+			if err := a.peerManager.Send(ctx, env.Destination, env); err == nil {
+				return nil
+			}
+		}
+		a.logger.Debug("P2P connect failed, falling back to relay", "dest", env.Destination)
+	}
+
+	// 3. Fallback: send via signaling relay (WebSocket bridge_message).
+	return a.sendViaRelay(ctx, env)
+}
+
+// sendViaRelay sends an envelope through the signaling server as a bridge message.
+func (a *Agent) sendViaRelay(ctx context.Context, env *envelope.Envelope) error {
+	data, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal envelope: %w", err)
+	}
+	return a.signaling.Send(ctx, pccoresignaling.SignalMessage{
+		Type:      pccoresignaling.MessageTypeBridgeMessage,
+		From:      a.agentID,
+		To:        env.Destination,
+		Payload:   data,
+		Timestamp: time.Now(),
+	})
 }
 
 // OnMessage registers a handler for incoming messages.

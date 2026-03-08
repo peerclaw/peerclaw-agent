@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	pcsignaling "github.com/peerclaw/peerclaw-core/signaling"
 	"nhooyr.io/websocket"
@@ -57,9 +58,10 @@ func (c *Client) Connect(ctx context.Context) error {
 
 func (c *Client) readLoop(ctx context.Context) {
 	defer func() {
-		c.mu.Lock()
-		c.closed = true
-		c.mu.Unlock()
+		// Auto-reconnect on unexpected disconnection.
+		if !c.isClosed() {
+			go c.reconnectLoop(ctx)
+		}
 	}()
 
 	for {
@@ -143,6 +145,43 @@ func (c *Client) SetBridgeHandler(handler BridgeMessageHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bridgeHandler = handler
+}
+
+// SetAgentID sets the agent ID for the signaling client.
+// Must be called before Connect().
+func (c *Client) SetAgentID(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.agentID = id
+}
+
+// reconnectLoop attempts to reconnect to the signaling server with exponential backoff.
+func (c *Client) reconnectLoop(ctx context.Context) {
+	delay := time.Second
+	maxDelay := 60 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		if c.isClosed() {
+			return
+		}
+		c.logger.Info("attempting signaling reconnect", "delay", delay)
+		// Reset closed state to allow Connect to proceed.
+		c.mu.Lock()
+		c.closed = false
+		c.mu.Unlock()
+		if err := c.Connect(ctx); err != nil {
+			c.logger.Warn("signaling reconnect failed", "error", err)
+			delay = min(delay*2, maxDelay)
+			continue
+		}
+		c.logger.Info("signaling reconnected")
+		return
+	}
 }
 
 func (c *Client) isClosed() bool {

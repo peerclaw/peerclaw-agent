@@ -15,5 +15,6 @@ type SignalingClient interface {
 	Receive() <-chan pcsignaling.SignalMessage
 	ICEServers() []pcsignaling.ICEServerConfig
 	SetBridgeHandler(handler BridgeMessageHandler)
+	SetAgentID(id string)
 	Close() error
 }
