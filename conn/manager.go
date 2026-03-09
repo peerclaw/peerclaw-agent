@@ -26,13 +26,14 @@ const (
 
 // Config holds configuration for the connection manager.
 type Config struct {
-	AgentID      string
-	Signaling    signaling.SignalingClient
-	PeerManager  *peer.Manager
-	MsgHandler   func(ctx context.Context, env *envelope.Envelope)
-	X25519PubKey string
-	OnSession    func(peerID, x25519 string) error
-	Logger       *slog.Logger
+	AgentID        string
+	Signaling      signaling.SignalingClient
+	PeerManager    *peer.Manager
+	MsgHandler     func(ctx context.Context, env *envelope.Envelope)
+	X25519PubKey   string
+	OnSession      func(peerID, x25519 string) error
+	ConnectionGate func(peerID string) bool // returns true to allow connection
+	Logger         *slog.Logger
 }
 
 // pendingConn tracks an in-progress WebRTC connection negotiation.
@@ -49,13 +50,14 @@ type pendingConn struct {
 // It consumes signaling messages, initiates and responds to WebRTC connections,
 // and registers established connections with the PeerManager.
 type Manager struct {
-	agentID      string
-	signaling    signaling.SignalingClient
-	peerManager  *peer.Manager
-	msgHandler   func(ctx context.Context, env *envelope.Envelope)
-	x25519PubKey string
-	onSession    func(peerID, x25519 string) error
-	logger       *slog.Logger
+	agentID        string
+	signaling      signaling.SignalingClient
+	peerManager    *peer.Manager
+	msgHandler     func(ctx context.Context, env *envelope.Envelope)
+	x25519PubKey   string
+	onSession      func(peerID, x25519 string) error
+	connectionGate func(peerID string) bool
+	logger         *slog.Logger
 
 	pending map[string]*pendingConn // peerID -> pending connection
 	mu      sync.Mutex
@@ -71,14 +73,15 @@ func New(cfg Config) *Manager {
 		logger = slog.Default()
 	}
 	return &Manager{
-		agentID:      cfg.AgentID,
-		signaling:    cfg.Signaling,
-		peerManager:  cfg.PeerManager,
-		msgHandler:   cfg.MsgHandler,
-		x25519PubKey: cfg.X25519PubKey,
-		onSession:    cfg.OnSession,
-		logger:       logger,
-		pending:      make(map[string]*pendingConn),
+		agentID:        cfg.AgentID,
+		signaling:      cfg.Signaling,
+		peerManager:    cfg.PeerManager,
+		msgHandler:     cfg.MsgHandler,
+		x25519PubKey:   cfg.X25519PubKey,
+		onSession:      cfg.OnSession,
+		connectionGate: cfg.ConnectionGate,
+		logger:         logger,
+		pending:        make(map[string]*pendingConn),
 	}
 }
 
@@ -107,6 +110,11 @@ func (m *Manager) Stop() {
 // Connect initiates a P2P connection to a peer. It blocks until the connection
 // is established or the context is cancelled/times out.
 func (m *Manager) Connect(ctx context.Context, peerID string) error {
+	// Gate check: reject outbound connections to non-trusted peers.
+	if m.connectionGate != nil && !m.connectionGate(peerID) {
+		return fmt.Errorf("peer %s is not trusted", peerID)
+	}
+
 	// Check if already connected via PeerManager.
 	if _, ok := m.peerManager.GetPeer(peerID); ok {
 		return nil
@@ -232,6 +240,12 @@ func (m *Manager) signalingLoop() {
 func (m *Manager) handleOffer(msg pcsignaling.SignalMessage) {
 	peerID := msg.From
 	m.logger.Info("received WebRTC offer", "peer", peerID)
+
+	// Gate check: reject offers from non-trusted peers before allocating any resources.
+	if m.connectionGate != nil && !m.connectionGate(peerID) {
+		m.logger.Info("connection offer rejected by gate", "peer", peerID)
+		return
+	}
 
 	// If we already have a connection to this peer, ignore.
 	if _, ok := m.peerManager.GetPeer(peerID); ok {

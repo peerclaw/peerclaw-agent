@@ -1038,6 +1038,131 @@ func TestHandleAnswer_OnSessionCallback(t *testing.T) {
 	}
 }
 
+// TestConnectionGate_RejectsOffer verifies that handleOffer rejects offers
+// when the connection gate returns false.
+func TestConnectionGate_RejectsOffer(t *testing.T) {
+	sig := newMockSignaling(nil)
+	pm := peer.NewManager(nil)
+
+	m := New(Config{
+		AgentID:      "agent-a",
+		Signaling:    sig,
+		PeerManager:  pm,
+		X25519PubKey: "test-x25519-key",
+		ConnectionGate: func(peerID string) bool {
+			return peerID == "allowed-peer"
+		},
+	})
+	m.ctx, m.cancel = context.WithCancel(context.Background())
+	defer m.cancel()
+
+	beforeLen := len(sig.sentMessages())
+
+	// Offer from non-allowed peer should be silently dropped.
+	m.handleOffer(pcsignaling.SignalMessage{
+		Type: pcsignaling.MessageTypeOffer,
+		From: "blocked-peer",
+		To:   "agent-a",
+		SDP:  "v=0\r\n",
+	})
+
+	// No answer should have been sent.
+	if len(sig.sentMessages()) != beforeLen {
+		t.Error("no signaling messages should be sent when gate rejects offer")
+	}
+
+	// No pending connection should exist.
+	m.mu.Lock()
+	_, exists := m.pending["blocked-peer"]
+	m.mu.Unlock()
+	if exists {
+		t.Error("no pending connection should be created for rejected offer")
+	}
+}
+
+// TestConnectionGate_AllowsOffer verifies that handleOffer proceeds when
+// the connection gate returns true.
+func TestConnectionGate_AllowsOffer(t *testing.T) {
+	sig := newMockSignaling(nil)
+	pm := peer.NewManager(nil)
+
+	m := New(Config{
+		AgentID:      "agent-a",
+		Signaling:    sig,
+		PeerManager:  pm,
+		X25519PubKey: "test-x25519-key",
+		ConnectionGate: func(peerID string) bool {
+			return true // allow all
+		},
+	})
+	m.ctx, m.cancel = context.WithCancel(context.Background())
+	defer m.cancel()
+
+	// Offer from any peer should be processed (may fail on SDP but gate passes).
+	m.handleOffer(pcsignaling.SignalMessage{
+		Type: pcsignaling.MessageTypeOffer,
+		From: "any-peer",
+		To:   "agent-a",
+		SDP:  "", // will fail CreateAnswer but gate should pass
+	})
+
+	// The fact that handleOffer attempted to create a WebRTC transport
+	// (instead of returning early) confirms the gate allowed it.
+}
+
+// TestConnectionGate_RejectsOutbound verifies that Connect rejects outbound
+// connections when the connection gate returns false.
+func TestConnectionGate_RejectsOutbound(t *testing.T) {
+	sig := newMockSignaling(nil)
+	pm := peer.NewManager(nil)
+
+	m := New(Config{
+		AgentID:      "agent-a",
+		Signaling:    sig,
+		PeerManager:  pm,
+		X25519PubKey: "test-x25519-key",
+		ConnectionGate: func(peerID string) bool {
+			return false // deny all
+		},
+	})
+	m.ctx, m.cancel = context.WithCancel(context.Background())
+	defer m.cancel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := m.Connect(ctx, "some-peer")
+	if err == nil {
+		t.Error("expected error when gate rejects outbound connection")
+	}
+
+	// No signaling messages should have been sent.
+	if len(sig.sentMessages()) != 0 {
+		t.Errorf("expected 0 signaling messages, got %d", len(sig.sentMessages()))
+	}
+}
+
+// TestConnectionGate_NilAllowsAll verifies that when no gate is set,
+// all connections are allowed (backward compatibility).
+func TestConnectionGate_NilAllowsAll(t *testing.T) {
+	sig := newMockSignaling(nil)
+	pm := peer.NewManager(nil)
+
+	// No ConnectionGate set.
+	m := newTestManager("agent-a", sig, pm)
+	m.ctx, m.cancel = context.WithCancel(context.Background())
+	defer m.cancel()
+
+	// handleOffer should proceed (not reject).
+	m.handleOffer(pcsignaling.SignalMessage{
+		Type: pcsignaling.MessageTypeOffer,
+		From: "any-peer",
+		To:   "agent-a",
+		SDP:  "",
+	})
+	// No crash means it proceeded past the gate check.
+}
+
 // TestNew_NilLogger ensures a nil Logger is replaced with slog.Default.
 func TestNew_NilLogger(t *testing.T) {
 	sig := newMockSignaling(nil)

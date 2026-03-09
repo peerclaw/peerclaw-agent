@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/peerclaw/peerclaw-agent/conn"
 	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/peer"
@@ -21,6 +22,16 @@ import (
 
 // MessageHandler is called when an incoming envelope is received.
 type MessageHandler func(ctx context.Context, env *envelope.Envelope)
+
+// ConnectionRequest describes a pending connection from an unknown peer.
+type ConnectionRequest struct {
+	FromAgentID string
+	Timestamp   time.Time
+}
+
+// ConnectionRequestHandler is called when a non-whitelisted peer requests a connection.
+// Return true to allow, false to deny.
+type ConnectionRequestHandler func(ctx context.Context, req *ConnectionRequest) bool
 
 // Options configures an Agent.
 type Options struct {
@@ -98,21 +109,23 @@ type Options struct {
 // Agent is the top-level API that assembles all P2P SDK components:
 // identity, peer management, discovery, signaling, and security.
 type Agent struct {
-	opts          Options
-	keypair       *identity.Keypair
-	peerManager   *peer.Manager
-	discovery     discovery.Discovery
-	signaling     pcsignaling.SignalingClient
-	trustStore    *security.TrustStore
-	msgValidator  *security.MessageValidator
-	sessionKeys   map[string]*security.SessionKey // peer public key -> session key
-	handler       MessageHandler
-	connManager   *conn.Manager
-	msgCache      *transport.MessageCache
-	agentID       string
-	logger        *slog.Logger
-	mu            sync.Mutex
-	running       bool
+	opts               Options
+	keypair            *identity.Keypair
+	peerManager        *peer.Manager
+	discovery          discovery.Discovery
+	signaling          pcsignaling.SignalingClient
+	trustStore         *security.TrustStore
+	msgValidator       *security.MessageValidator
+	sessionKeys        map[string]*security.SessionKey // peer public key -> session key
+	handler            MessageHandler
+	connRequestHandler ConnectionRequestHandler
+	connManager        *conn.Manager
+	msgCache           *transport.MessageCache
+	agentID            string
+	logger             *slog.Logger
+	mu                 sync.Mutex
+	running            bool
+	stopNonceCleaner   context.CancelFunc
 }
 
 // New creates a new Agent with the given options.
@@ -263,7 +276,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.HandleIncomingEnvelope(context.Background(), &env)
 	})
 
-	// Start connection orchestrator.
+	// Start connection orchestrator with connection gate.
 	x25519Pub, _ := a.keypair.X25519PublicKeyString()
 	a.connManager = conn.New(conn.Config{
 		AgentID:      a.agentID,
@@ -272,9 +285,42 @@ func (a *Agent) Start(ctx context.Context) error {
 		MsgHandler:   a.HandleIncomingEnvelope,
 		X25519PubKey: x25519Pub,
 		OnSession:    a.EstablishSession,
-		Logger:       a.logger,
+		ConnectionGate: func(peerID string) bool {
+			level := a.trustStore.Check(peerID)
+			if level == security.TrustBlocked {
+				return false
+			}
+			if a.trustStore.IsAllowed(peerID) {
+				return true
+			}
+			// Unknown peer: call owner's handler if registered.
+			if a.connRequestHandler != nil {
+				return a.connRequestHandler(ctx, &ConnectionRequest{
+					FromAgentID: peerID,
+					Timestamp:   time.Now(),
+				})
+			}
+			return false // default deny
+		},
+		Logger: a.logger,
 	})
 	a.connManager.Start(ctx)
+
+	// Start nonce cleanup goroutine.
+	nonceCtx, nonceCancel := context.WithCancel(ctx)
+	a.stopNonceCleaner = nonceCancel
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-nonceCtx.Done():
+				return
+			case <-ticker.C:
+				a.msgValidator.CleanExpiredNonces()
+			}
+		}
+	}()
 
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
 	return nil
@@ -289,6 +335,11 @@ func (a *Agent) Stop(ctx context.Context) error {
 	}
 	a.running = false
 	a.mu.Unlock()
+
+	// Stop nonce cleanup goroutine.
+	if a.stopNonceCleaner != nil {
+		a.stopNonceCleaner()
+	}
 
 	// Deregister from platform.
 	if a.agentID != "" {
@@ -327,6 +378,16 @@ func (a *Agent) Stop(ctx context.Context) error {
 // Send sends an envelope to a peer using P2P (preferred) or signaling relay (fallback).
 // The payload is signed, then encrypted if a session key exists for the peer.
 func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
+	// Outbound whitelist check.
+	if !a.trustStore.IsAllowed(env.Destination) {
+		return fmt.Errorf("destination %s is not whitelisted", env.Destination)
+	}
+
+	// Set anti-replay fields before signing.
+	env.Nonce = uuid.New().String()
+	env.Timestamp = time.Now()
+	env.Source = a.agentID
+
 	// Sign the envelope payload.
 	env.Signature = identity.Sign(a.keypair.PrivateKey, env.Payload)
 
@@ -467,6 +528,21 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 		return
 	}
 
+	// Message validation: signature, replay, size, timestamp.
+	pubKeyStr := a.resolvePeerPublicKey(env.Source)
+	if err := a.msgValidator.ValidateMessage(env, pubKeyStr); err != nil {
+		a.logger.Warn("message validation failed", "source", env.Source, "error", err)
+		return
+	}
+
+	// Inbound whitelist check.
+	if env.Source != "" {
+		if !a.trustStore.IsAllowedWithReputation(env.Source) {
+			a.logger.Warn("message from non-whitelisted peer dropped", "source", env.Source)
+			return
+		}
+	}
+
 	// Update trust store last seen.
 	if env.Source != "" {
 		a.trustStore.TouchLastSeen(env.Source)
@@ -476,6 +552,45 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 	if a.handler != nil {
 		a.handler(ctx, env)
 	}
+}
+
+// OnConnectionRequest registers a handler called when a non-whitelisted peer
+// requests a connection. The handler returns true to allow, false to deny.
+func (a *Agent) OnConnectionRequest(handler ConnectionRequestHandler) {
+	a.connRequestHandler = handler
+}
+
+// AddContact adds an agent to the whitelist with TrustVerified level.
+func (a *Agent) AddContact(agentID string) {
+	a.trustStore.SetTrust(agentID, security.TrustVerified)
+}
+
+// RemoveContact removes an agent from the whitelist.
+func (a *Agent) RemoveContact(agentID string) {
+	a.trustStore.RemoveEntry(agentID)
+}
+
+// BlockAgent explicitly blocks an agent.
+func (a *Agent) BlockAgent(agentID string) {
+	a.trustStore.SetTrust(agentID, security.TrustBlocked)
+}
+
+// ListContacts returns all trust store entries.
+func (a *Agent) ListContacts() []security.TrustEntry {
+	return a.trustStore.ListEntries()
+}
+
+// resolvePeerPublicKey attempts to find the public key for a peer by agentID.
+// Returns empty string if not found (ValidateMessage will skip signature verification).
+func (a *Agent) resolvePeerPublicKey(agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	p, ok := a.peerManager.GetPeer(agentID)
+	if ok && p.PublicKey != "" {
+		return p.PublicKey
+	}
+	return ""
 }
 
 // Discover finds agents by capabilities on the platform.

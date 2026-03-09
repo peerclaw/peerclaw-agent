@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/peerclaw/peerclaw-agent/security"
 	"github.com/peerclaw/peerclaw-core/envelope"
 	"github.com/peerclaw/peerclaw-core/protocol"
 )
@@ -123,12 +125,16 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	}
 
 	// Test HandleIncomingEnvelope.
+	// Whitelist peer1ID in a2's trust store so the message passes the whitelist check.
+	a2.AddContact(peer1ID)
+
 	var received *envelope.Envelope
 	a2.OnMessage(func(_ context.Context, e *envelope.Envelope) {
 		received = e
 	})
 
 	env2 := envelope.New(peer1ID, peer2ID, protocol.ProtocolA2A, payload)
+	env2.Timestamp = time.Now() // required for message validation
 	encrypted2, _ := sk.Encrypt(env2.Payload)
 	env2.Payload = encrypted2
 	env2.Encrypted = true
@@ -180,5 +186,191 @@ func TestAgent_DecryptEnvelope_Unencrypted(t *testing.T) {
 	}
 	if string(result.Payload) != string(payload) {
 		t.Error("unencrypted envelope should pass through unchanged")
+	}
+}
+
+func TestHandleIncomingEnvelope_RejectsNonWhitelisted(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	var received bool
+	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
+		received = true
+	})
+
+	env := &envelope.Envelope{
+		Source:    "untrusted-peer",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now(),
+	}
+	a.HandleIncomingEnvelope(context.Background(), env)
+
+	if received {
+		t.Error("handler should not be called for non-whitelisted peer")
+	}
+}
+
+func TestHandleIncomingEnvelope_AcceptsWhitelisted(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	// Whitelist the peer.
+	a.AddContact("trusted-peer")
+
+	var received bool
+	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
+		received = true
+	})
+
+	env := &envelope.Envelope{
+		Source:    "trusted-peer",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now(),
+	}
+	a.HandleIncomingEnvelope(context.Background(), env)
+
+	if !received {
+		t.Error("handler should be called for whitelisted peer")
+	}
+}
+
+func TestHandleIncomingEnvelope_RejectsExpiredTimestamp(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	a.AddContact("peer-1")
+
+	var received bool
+	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
+		received = true
+	})
+
+	env := &envelope.Envelope{
+		Source:    "peer-1",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now().Add(-10 * time.Minute), // way outside 2-min skew
+	}
+	a.HandleIncomingEnvelope(context.Background(), env)
+
+	if received {
+		t.Error("handler should not be called for expired timestamp")
+	}
+}
+
+func TestHandleIncomingEnvelope_RejectsReplayedNonce(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	a.AddContact("peer-1")
+
+	callCount := 0
+	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
+		callCount++
+	})
+
+	env1 := &envelope.Envelope{
+		Source:    "peer-1",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now(),
+		Nonce:    "unique-nonce-123",
+	}
+	a.HandleIncomingEnvelope(context.Background(), env1)
+
+	if callCount != 1 {
+		t.Fatalf("expected 1 call, got %d", callCount)
+	}
+
+	// Replay same nonce.
+	env2 := &envelope.Envelope{
+		Source:    "peer-1",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now(),
+		Nonce:    "unique-nonce-123",
+	}
+	a.HandleIncomingEnvelope(context.Background(), env2)
+
+	if callCount != 1 {
+		t.Errorf("replayed message should be rejected, got %d calls", callCount)
+	}
+}
+
+func TestHandleIncomingEnvelope_RejectsBlockedPeer(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	a.BlockAgent("blocked-peer")
+
+	var received bool
+	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
+		received = true
+	})
+
+	env := &envelope.Envelope{
+		Source:    "blocked-peer",
+		Payload:  []byte("hello"),
+		Timestamp: time.Now(),
+	}
+	a.HandleIncomingEnvelope(context.Background(), env)
+
+	if received {
+		t.Error("handler should not be called for blocked peer")
+	}
+}
+
+func TestSend_RejectsNonWhitelistedDestination(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+	a.agentID = "test-agent"
+
+	env := envelope.New("test-agent", "unknown-dest", protocol.ProtocolA2A, []byte("hello"))
+	err := a.Send(context.Background(), env)
+	if err == nil {
+		t.Error("expected error sending to non-whitelisted destination")
+	}
+}
+
+func TestContactManagement(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	// Initially no contacts.
+	if len(a.ListContacts()) != 0 {
+		t.Errorf("expected 0 contacts, got %d", len(a.ListContacts()))
+	}
+
+	// Add contact.
+	a.AddContact("peer-1")
+	entries := a.ListContacts()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 contact, got %d", len(entries))
+	}
+	if entries[0].Level != security.TrustVerified {
+		t.Errorf("expected TrustVerified, got %d", entries[0].Level)
+	}
+
+	// Block agent.
+	a.BlockAgent("peer-2")
+	if a.trustStore.Check("peer-2") != security.TrustBlocked {
+		t.Error("peer-2 should be blocked")
+	}
+
+	// Remove contact.
+	a.RemoveContact("peer-1")
+	if a.trustStore.IsAllowed("peer-1") {
+		t.Error("peer-1 should be removed from whitelist")
 	}
 }
