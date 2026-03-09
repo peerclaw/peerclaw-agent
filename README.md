@@ -12,6 +12,8 @@ P2P Agent SDK for the [PeerClaw](https://github.com/peerclaw/peerclaw) identity 
 - **End-to-End Encryption** — X25519 ECDH key exchange + XChaCha20-Poly1305 encryption, with encrypted sessions established during signaling
 - **TOFU Trust** — Five-level trust model (Unknown / TOFU / Verified / Blocked / Pinned) with CLI management
 - **Message Signing** — Ed25519 per-message signature verification ensuring message integrity and origin authenticity
+- **Message Validation Pipeline** — Integrated signature verification, timestamp freshness (±2min), nonce-based replay protection, and payload size limits on every incoming message
+- **P2P Whitelist (Default-Deny)** — TrustStore-based contact management: AddContact / RemoveContact / BlockAgent with connection gating that rejects unauthorized offers before allocating WebRTC resources
 - **Connection Quality Monitoring** — RTT, packet loss, and throughput metrics with automatic degradation notifications
 - **Auto-Discovery** — Register and discover other Agents through peerclaw-server
 
@@ -119,6 +121,11 @@ for _, r := range results {
 | `agent.X25519PublicKeyString()` | Get the X25519 public key (hex-encoded) |
 | `agent.ID()` | Get the Agent ID assigned after registration |
 | `agent.PublicKey()` | Get the Base64-encoded public key |
+| `agent.AddContact(agentID)` | Whitelist a peer for messaging and connections (TrustVerified) |
+| `agent.RemoveContact(agentID)` | Remove a peer from the whitelist |
+| `agent.BlockAgent(agentID)` | Block a peer — all messages and connections are rejected |
+| `agent.ListContacts()` | List all trust entries |
+| `agent.OnConnectionRequest(handler)` | Register a callback for connection requests from unknown peers |
 
 ### Options
 
@@ -135,7 +142,7 @@ for _, r := range results {
 
 ## Security Model
 
-PeerClaw employs a multi-layered security architecture:
+PeerClaw employs a five-layer security architecture:
 
 ### 1. Connection Level — TOFU (Trust-On-First-Use)
 
@@ -152,6 +159,10 @@ X25519 public keys are exchanged during the signaling handshake. A shared secret
 ### 4. Execution Level — Sandboxing
 
 Requests from external Agents are subject to permission constraints and resource limits to prevent malicious operations.
+
+### 5. P2P Communication — Whitelist + Message Validation
+
+Default-deny contact management: Agents must be whitelisted via `AddContact()` before they can connect or exchange messages. Every incoming message passes through the MessageValidator (signature, timestamp freshness ±2min, nonce replay check, 1MB size limit). The ConnectionGate rejects unauthorized WebRTC offers before allocating any resources. Unknown peers trigger the `OnConnectionRequest` callback, letting the owner approve or deny in real time.
 
 ## Trust CLI
 

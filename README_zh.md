@@ -12,6 +12,8 @@
 - **端到端加密** — X25519 ECDH 密钥交换 + XChaCha20-Poly1305 加密，信令阶段建立加密会话
 - **TOFU 信任** — 五级信任模型（Unknown / TOFU / Verified / Blocked / Pinned），支持 CLI 管理
 - **消息签名** — 基于 Ed25519 的消息级签名验证，确保消息完整性和来源可信
+- **消息验证管线** — 集成签名验证、时间戳新鲜度（±2 分钟）、基于 nonce 的重放防护、载荷大小限制
+- **P2P 白名单（默认拒绝）** — 基于 TrustStore 的联系人管理：AddContact / RemoveContact / BlockAgent，连接门控在分配 WebRTC 资源之前拒绝未授权 offer
 - **连接质量监控** — RTT、丢包率、吞吐统计，连接降级自动通知
 - **自动发现** — 通过 peerclaw-server 注册和发现其他 Agent
 
@@ -119,6 +121,11 @@ for _, r := range results {
 | `agent.X25519PublicKeyString()` | 获取 X25519 公钥（hex） |
 | `agent.ID()` | 获取注册后的 Agent ID |
 | `agent.PublicKey()` | 获取 Base64 编码的公钥 |
+| `agent.AddContact(agentID)` | 将 peer 加入白名单，允许消息和连接（TrustVerified） |
+| `agent.RemoveContact(agentID)` | 从白名单移除 peer |
+| `agent.BlockAgent(agentID)` | 拉黑 peer — 所有消息和连接被拒绝 |
+| `agent.ListContacts()` | 列出所有信任条目 |
+| `agent.OnConnectionRequest(handler)` | 注册未知 peer 连接请求的回调 |
 
 ### Options 配置
 
@@ -135,7 +142,7 @@ for _, r := range results {
 
 ## 安全模型
 
-PeerClaw 采用三层安全架构：
+PeerClaw 采用多层安全架构：
 
 ### 1. 连接级 — TOFU (Trust-On-First-Use)
 
@@ -152,6 +159,10 @@ PeerClaw 采用三层安全架构：
 ### 4. 执行级 — 沙箱
 
 对外部 Agent 的请求实施权限约束和资源限制，防止恶意操作。
+
+### 5. P2P 通信 — 白名单 + 消息验证
+
+默认拒绝的联系人管理：Agent 必须通过 `AddContact()` 加入白名单后才能连接或交换消息。每条入站消息都经过 MessageValidator 验证（签名、时间戳新鲜度 ±2 分钟、nonce 重放检查、1MB 大小限制）。ConnectionGate 在分配任何资源之前拒绝未授权的 WebRTC offer。未知 peer 触发 `OnConnectionRequest` 回调，让 owner 实时审批或拒绝。
 
 ## Trust CLI
 
