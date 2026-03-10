@@ -1,7 +1,7 @@
 // Package main demonstrates how to expose PeerClaw agent capabilities
 // as MCP-compatible tools for LLM-driven agents.
 //
-// This example creates a skill Handler, lists the available tools
+// This example creates a tools Handler, lists the available tools
 // (which can be sent to an LLM as tool definitions), and dispatches
 // a sample tool call — the same flow an LLM orchestrator would use.
 //
@@ -14,17 +14,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/peerclaw/peerclaw-agent/skill"
+	pctools "github.com/peerclaw/peerclaw-agent/tools"
 )
 
 func main() {
 	// In production, you would pass a real *agent.Agent (which satisfies
-	// skill.AgentAPI) and optionally an APIClient for server-dependent tools.
+	// pctools.AgentAPI) and optionally an APIClient for server-dependent tools.
 	//
 	// For this example we use nil agent + an APIClient pointing to a local server.
-	apiClient := skill.NewAPIClient("http://localhost:8080")
+	apiClient := pctools.NewAPIClient("http://localhost:8080")
 
-	h := skill.NewHandler(skill.Options{
+	h := pctools.NewHandler(pctools.Options{
 		// Agent: myAgent,  // a running *agent.Agent
 		APIClient: apiClient,
 		Disabled:  []string{"send_message"}, // disable P2P tools without an agent
@@ -44,7 +44,7 @@ func main() {
 
 	// Step 3: Simulate an LLM tool call — discover agents with "chat" capability.
 	fmt.Println("=== Simulating tool call: discover_agents ===")
-	input, _ := json.Marshal(skill.DiscoverInput{
+	input, _ := json.Marshal(pctools.DiscoverInput{
 		Capabilities: []string{"chat"},
 	})
 
