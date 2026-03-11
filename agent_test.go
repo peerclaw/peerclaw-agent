@@ -105,7 +105,8 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	sk := a1.sessionKeys[peer2ID]
 	a1.mu.Unlock()
 
-	encrypted, err := sk.Encrypt(env.Payload)
+	aad := []byte(env.Source + "|" + env.Destination + "|" + env.Nonce)
+	encrypted, err := sk.EncryptWithAAD(env.Payload, aad)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -144,7 +145,8 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	env2.Timestamp = time.Now()
 	// Sign before encryption — validation runs after decryption.
 	identity.SignEnvelope(env2, a1.keypair.PrivateKey)
-	encrypted2, _ := sk.Encrypt(env2.Payload)
+	aad2 := []byte(env2.Source + "|" + env2.Destination + "|" + env2.Nonce)
+	encrypted2, _ := sk.EncryptWithAAD(env2.Payload, aad2)
 	env2.Payload = encrypted2
 	env2.Encrypted = true
 	env2.SenderX25519 = a1X25519

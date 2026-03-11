@@ -59,38 +59,51 @@ func (sk *SessionKey) PeerID() string {
 // The nonce is prepended to the ciphertext.
 // Returns: nonce (24 bytes) || ciphertext || tag (16 bytes).
 func (sk *SessionKey) Encrypt(plaintext []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.NewX(sk.key)
+	return sk.EncryptWithAAD(plaintext, nil)
+}
+
+// EncryptWithAAD encrypts plaintext with additional associated data (AAD).
+// AAD is authenticated but not encrypted — it binds the ciphertext to context
+// (e.g., envelope Source + Destination + Nonce) preventing ciphertext swapping.
+func (sk *SessionKey) EncryptWithAAD(plaintext, aad []byte) ([]byte, error) {
+	cipher, err := chacha20poly1305.NewX(sk.key)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
 
-	nonce := make([]byte, aead.NonceSize()) // 24 bytes for XChaCha20
+	nonce := make([]byte, cipher.NonceSize()) // 24 bytes for XChaCha20
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 
 	// Seal appends the ciphertext to nonce, so result is nonce || ciphertext || tag
-	ciphertext := aead.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := cipher.Seal(nonce, nonce, plaintext, aad)
 	return ciphertext, nil
 }
 
 // Decrypt decrypts data produced by Encrypt.
 // Expects input format: nonce (24 bytes) || ciphertext || tag (16 bytes).
 func (sk *SessionKey) Decrypt(data []byte) ([]byte, error) {
-	aead, err := chacha20poly1305.NewX(sk.key)
+	return sk.DecryptWithAAD(data, nil)
+}
+
+// DecryptWithAAD decrypts data with additional associated data verification.
+// The AAD must match what was provided during encryption.
+func (sk *SessionKey) DecryptWithAAD(data, aad []byte) ([]byte, error) {
+	cipher, err := chacha20poly1305.NewX(sk.key)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
 
-	nonceSize := aead.NonceSize()
-	if len(data) < nonceSize+aead.Overhead() {
+	nonceSize := cipher.NonceSize()
+	if len(data) < nonceSize+cipher.Overhead() {
 		return nil, fmt.Errorf("ciphertext too short: %d bytes", len(data))
 	}
 
 	nonce := data[:nonceSize]
 	ciphertext := data[nonceSize:]
 
-	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := cipher.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}

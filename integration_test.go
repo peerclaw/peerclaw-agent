@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/peerclaw/peerclaw-core/envelope"
+	coreidentity "github.com/peerclaw/peerclaw-core/identity"
 	"github.com/peerclaw/peerclaw-core/protocol"
 	"github.com/peerclaw/peerclaw-agent/dht"
 	"github.com/peerclaw/peerclaw-agent/discovery"
@@ -18,26 +19,33 @@ func makeTestEnvelope(dest, content string) *envelope.Envelope {
 	return envelope.New("self", dest, protocol.ProtocolA2A, []byte(content))
 }
 
+func makeIntegrationTestNode(t *testing.T) (dht.NodeInfo, *coreidentity.Keypair) {
+	t.Helper()
+	kp, err := coreidentity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	pubKey := kp.PublicKeyString()
+	return dht.NodeInfo{
+		ID:        dht.NodeIDFromPublicKey(pubKey),
+		PublicKey: pubKey,
+	}, kp
+}
+
 // TestDHTOnlyDiscovery tests two agents discovering each other via DHT only (no server).
 func TestDHTOnlyDiscovery(t *testing.T) {
 	ctx := context.Background()
 
-	// Set up two DHT nodes.
-	nodeA := dht.NodeInfo{
-		ID:        dht.NodeIDFromPublicKey("agent-a-pubkey"),
-		PublicKey: "agent-a-pubkey",
-	}
-	nodeB := dht.NodeInfo{
-		ID:        dht.NodeIDFromPublicKey("agent-b-pubkey"),
-		PublicKey: "agent-b-pubkey",
-	}
+	// Set up two DHT nodes with real keypairs.
+	nodeA, kpA := makeIntegrationTestNode(t)
+	nodeB, kpB := makeIntegrationTestNode(t)
 
 	tA := dht.NewInMemoryTransport(nodeA, nil)
 	tB := dht.NewInMemoryTransport(nodeB, nil)
 	tA.Connect(tB)
 
-	dhtA := dht.NewDHT(nodeA, tA, nil)
-	dhtB := dht.NewDHT(nodeB, tB, nil)
+	dhtA := dht.NewDHT(nodeA, tA, nil, kpA)
+	dhtB := dht.NewDHT(nodeB, tB, nil, kpB)
 
 	dhtA.Start(ctx)
 	dhtB.Start(ctx)
@@ -81,13 +89,10 @@ func TestDHTOnlyDiscovery(t *testing.T) {
 func TestCompositeDiscoveryFallback(t *testing.T) {
 	ctx := context.Background()
 
-	// Set up DHT.
-	nodeInfo := dht.NodeInfo{
-		ID:        dht.NodeIDFromPublicKey("fallback-node"),
-		PublicKey: "fallback-node",
-	}
+	// Set up DHT with real keypair.
+	nodeInfo, kp := makeIntegrationTestNode(t)
 	transport := dht.NewInMemoryTransport(nodeInfo, nil)
-	d := dht.NewDHT(nodeInfo, transport, nil)
+	d := dht.NewDHT(nodeInfo, transport, nil, kp)
 	d.Start(ctx)
 	defer d.Stop()
 
@@ -189,12 +194,9 @@ func TestReputationGossipIntegration(t *testing.T) {
 func TestDHTPutGetAgentCard(t *testing.T) {
 	ctx := context.Background()
 
-	node := dht.NodeInfo{
-		ID:        dht.NodeIDFromPublicKey("card-test"),
-		PublicKey: "card-test",
-	}
+	node, kp := makeIntegrationTestNode(t)
 	tr := dht.NewInMemoryTransport(node, nil)
-	d := dht.NewDHT(node, tr, nil)
+	d := dht.NewDHT(node, tr, nil, kp)
 	d.Start(ctx)
 	defer d.Stop()
 

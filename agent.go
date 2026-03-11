@@ -474,7 +474,8 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	a.mu.RUnlock()
 
 	if sk != nil {
-		encrypted, err := sk.Encrypt(env.Payload)
+		aad := envelopeAAD(env)
+		encrypted, err := sk.EncryptWithAAD(env.Payload, aad)
 		if err != nil {
 			return fmt.Errorf("encrypt payload: %w", err)
 		}
@@ -682,6 +683,13 @@ func (a *Agent) X25519PublicKeyString() (string, error) {
 
 // DecryptEnvelope decrypts an encrypted envelope using the session key.
 // Returns the decrypted envelope, or the original if not encrypted.
+// envelopeAAD builds additional associated data for AEAD encryption from envelope
+// metadata. This binds the ciphertext to the envelope's Source, Destination, and
+// Nonce, preventing ciphertext from being swapped between envelopes.
+func envelopeAAD(env *envelope.Envelope) []byte {
+	return []byte(env.Source + "|" + env.Destination + "|" + env.Nonce)
+}
+
 func (a *Agent) DecryptEnvelope(env *envelope.Envelope) (*envelope.Envelope, error) {
 	if !env.Encrypted {
 		return env, nil
@@ -695,7 +703,8 @@ func (a *Agent) DecryptEnvelope(env *envelope.Envelope) (*envelope.Envelope, err
 		return nil, fmt.Errorf("no session key for peer %s", env.Source)
 	}
 
-	plaintext, err := sk.Decrypt(env.Payload)
+	aad := envelopeAAD(env)
+	plaintext, err := sk.DecryptWithAAD(env.Payload, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt payload: %w", err)
 	}

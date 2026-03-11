@@ -238,7 +238,9 @@ func (ts *TrustStore) Import(data []byte) error {
 			continue // Do not overwrite existing entries.
 		}
 		ts.trusted[k] = v
-		ts.onTrustChange(k, TrustUnknown, v.Level)
+		if ts.onTrustChange != nil {
+			ts.onTrustChange(k, TrustUnknown, v.Level)
+		}
 	}
 	return nil
 }
