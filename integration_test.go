@@ -160,7 +160,9 @@ func TestReputationGossipIntegration(t *testing.T) {
 	gossipA := security.NewReputationGossip(rsA, tsA, "agent-a")
 
 	// Agent A trusts Agent B.
-	tsA.SetTrust("agent-b", security.TrustVerified)
+	if err := tsA.SetTrust("agent-b", security.TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	// Agent A has info about a bad peer.
 	for i := 0; i < 50; i++ {
@@ -176,7 +178,9 @@ func TestReputationGossipIntegration(t *testing.T) {
 	// Simulate Agent B receiving the claim.
 	rsB := security.NewReputationStore()
 	tsB := security.NewTrustStore()
-	tsB.SetTrust("agent-a", security.TrustVerified)
+	if err := tsB.SetTrust("agent-a", security.TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 	gossipB := security.NewReputationGossip(rsB, tsB, "agent-b")
 
 	if !gossipB.ProcessClaim(claim) {

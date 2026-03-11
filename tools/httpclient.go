@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -117,21 +118,22 @@ func (c *APIClient) GetReputation(ctx context.Context, agentID string, limit int
 
 // BrowseDirectory searches the public agent directory with optional filters.
 func (c *APIClient) BrowseDirectory(ctx context.Context, dreq DirectoryRequest) (*DirectoryResponse, error) {
-	url := c.baseURL + "/api/v1/directory"
-	sep := "?"
+	reqURL := c.baseURL + "/api/v1/directory"
+	params := url.Values{}
 	if dreq.Capability != "" {
-		url += sep + "capability=" + dreq.Capability
-		sep = "&"
+		params.Set("capability", dreq.Capability)
 	}
 	if dreq.Search != "" {
-		url += sep + "search=" + dreq.Search
-		sep = "&"
+		params.Set("search", dreq.Search)
 	}
 	if dreq.PageSize > 0 {
-		url += sep + "page_size=" + strconv.Itoa(dreq.PageSize)
+		params.Set("page_size", strconv.Itoa(dreq.PageSize))
+	}
+	if len(params) > 0 {
+		reqURL += "?" + params.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -180,7 +180,7 @@ type Mailbox struct {
 	pool       RelayPool
 	outbox     []OutboxEntry
 	lastSync   time.Time
-	seenEvents sync.Map // event ID → struct{} for dedup
+	seenEvents sync.Map // event ID → time.Time for dedup + cleanup
 
 	onMessage MailboxMessageHandler
 	onReceipt MailboxReceiptHandler
@@ -295,6 +295,10 @@ func (m *Mailbox) Start(ctx context.Context) {
 	// Outbox retry loop.
 	m.wg.Add(1)
 	go m.outboxRetryLoop(ctx)
+
+	// Seen events cleanup loop.
+	m.wg.Add(1)
+	go m.seenEventsCleanupLoop(ctx)
 
 	m.logger.Info("mailbox started",
 		"inbox_relays", m.cfg.InboxRelays,
@@ -459,7 +463,7 @@ func (m *Mailbox) collectEvents(ctx context.Context, events <-chan nostr.Event) 
 func (m *Mailbox) handleMailboxEvent(event *nostr.Event) {
 	// Dedup by event ID.
 	eventIDHex := event.ID.Hex()
-	if _, loaded := m.seenEvents.LoadOrStore(eventIDHex, struct{}{}); loaded {
+	if _, loaded := m.seenEvents.LoadOrStore(eventIDHex, time.Now()); loaded {
 		return
 	}
 
@@ -757,6 +761,30 @@ func (m *Mailbox) OutboxEntries() []OutboxEntry {
 	entries := make([]OutboxEntry, len(m.outbox))
 	copy(entries, m.outbox)
 	return entries
+}
+
+// seenEventsCleanupLoop periodically removes stale entries from seenEvents
+// to prevent unbounded memory growth.
+func (m *Mailbox) seenEventsCleanupLoop(ctx context.Context) {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-30 * time.Minute)
+			m.seenEvents.Range(func(key, value any) bool {
+				if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+					m.seenEvents.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 // Persistence helpers.

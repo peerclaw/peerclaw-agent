@@ -49,7 +49,7 @@ type NostrSignaling struct {
 	logger        *slog.Logger
 	iceServers    []pcsignaling.ICEServerConfig
 	bridgeHandler BridgeMessageHandler
-	seenEvents    sync.Map // event ID -> struct{} for dedup
+	seenEvents    sync.Map // event ID -> time.Time for dedup + cleanup
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	mu            sync.Mutex
@@ -158,6 +158,10 @@ func (ns *NostrSignaling) Connect(ctx context.Context) error {
 		}
 	}
 
+	// Start seen events cleanup loop.
+	ns.wg.Add(1)
+	go ns.seenEventsCleanupLoop(ctx)
+
 	return nil
 }
 
@@ -264,7 +268,7 @@ func (ns *NostrSignaling) subscribeLoop(ctx context.Context, rs *signalingRelayS
 func (ns *NostrSignaling) handleEvent(event *nostr.Event) {
 	// Dedup by event ID.
 	eventIDHex := event.ID.Hex()
-	if _, loaded := ns.seenEvents.LoadOrStore(eventIDHex, struct{}{}); loaded {
+	if _, loaded := ns.seenEvents.LoadOrStore(eventIDHex, time.Now()); loaded {
 		return
 	}
 
@@ -327,6 +331,30 @@ func (ns *NostrSignaling) backoff(rs *signalingRelayState) time.Duration {
 		d = signalingReconnectMaxDelay
 	}
 	return d
+}
+
+// seenEventsCleanupLoop periodically removes stale entries from seenEvents
+// to prevent unbounded memory growth.
+func (ns *NostrSignaling) seenEventsCleanupLoop(ctx context.Context) {
+	defer ns.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-30 * time.Minute)
+			ns.seenEvents.Range(func(key, value any) bool {
+				if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+					ns.seenEvents.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 // Send publishes a signaling message as a Nostr ephemeral event.

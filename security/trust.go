@@ -54,6 +54,25 @@ type TrustEntry struct {
 	ExpiresAt time.Time  `json:"expires_at,omitempty"`
 }
 
+// ErrInvalidTrustTransition is returned when a trust level transition is not allowed.
+var ErrInvalidTrustTransition = fmt.Errorf("invalid trust level transition")
+
+// ValidTrustTransition checks whether transitioning from one trust level to another
+// is allowed by the trust state machine. Invalid transitions:
+//   - TrustBlocked -> TrustPinned (must go through TrustVerified first)
+//   - TrustPinned -> TrustTOFU (downgrade not allowed)
+func ValidTrustTransition(from, to TrustLevel) bool {
+	// Blocked -> Pinned is not allowed (must go through Verified first).
+	if from == TrustBlocked && to == TrustPinned {
+		return false
+	}
+	// Pinned -> TOFU is a downgrade and not allowed.
+	if from == TrustPinned && to == TrustTOFU {
+		return false
+	}
+	return true
+}
+
 // TrustStore manages TOFU trust relationships with peers.
 type TrustStore struct {
 	mu              sync.RWMutex
@@ -116,18 +135,38 @@ func (ts *TrustStore) TrustOnFirstUse(pubKey, firstSeen string) TrustLevel {
 }
 
 // SetTrust explicitly sets the trust level for a public key.
-func (ts *TrustStore) SetTrust(pubKey string, level TrustLevel) {
+// Returns an error if the transition is not allowed by the trust state machine.
+func (ts *TrustStore) SetTrust(pubKey string, level TrustLevel) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	entry := ts.trusted[pubKey]
 	oldLevel := entry.Level
+
+	if !ValidTrustTransition(oldLevel, level) {
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidTrustTransition,
+			TrustLevelString(oldLevel), TrustLevelString(level))
+	}
+
+	// Preserve original FirstSeen and ExpiresAt if the entry already exists (L-05).
+	originalFirstSeen := entry.FirstSeen
+	originalExpiresAt := entry.ExpiresAt
+
 	entry.PublicKey = pubKey
 	entry.Level = level
+
+	if originalFirstSeen != "" {
+		entry.FirstSeen = originalFirstSeen
+	}
+	if !originalExpiresAt.IsZero() {
+		entry.ExpiresAt = originalExpiresAt
+	}
+
 	ts.trusted[pubKey] = entry
 	if ts.onTrustChange != nil && oldLevel != level {
 		ts.onTrustChange(pubKey, oldLevel, level)
 	}
+	return nil
 }
 
 // IsAllowed returns true if the peer is trusted (TOFU, Verified, or Pinned).
@@ -261,7 +300,8 @@ func (ts *TrustStore) LoadFromFile(path string) error {
 	return json.Unmarshal(data, &ts.trusted)
 }
 
-// SaveToFile persists the trust store to a JSON file.
+// SaveToFile persists the trust store to a JSON file using atomic write
+// (write to temp file, then rename) to prevent corruption on crash.
 func (ts *TrustStore) SaveToFile(path string) error {
 	ts.mu.RLock()
 	data, err := json.MarshalIndent(ts.trusted, "", "  ")
@@ -270,7 +310,11 @@ func (ts *TrustStore) SaveToFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal trust store: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write trust store temp: %w", err)
+	}
+	return os.Rename(tmp, path)
 }
 
 // SetReputationStore associates a ReputationStore with this TrustStore.

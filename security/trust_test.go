@@ -33,13 +33,17 @@ func TestTrustStore_TOFU(t *testing.T) {
 
 func TestTrustStore_SetTrust(t *testing.T) {
 	ts := NewTrustStore()
-	ts.SetTrust("pubkey-1", TrustBlocked)
+	if err := ts.SetTrust("pubkey-1", TrustBlocked); err != nil {
+		t.Fatalf("SetTrust to Blocked: %v", err)
+	}
 
 	if ts.IsAllowed("pubkey-1") {
 		t.Error("blocked peer should not be allowed")
 	}
 
-	ts.SetTrust("pubkey-1", TrustVerified)
+	if err := ts.SetTrust("pubkey-1", TrustVerified); err != nil {
+		t.Fatalf("SetTrust to Verified: %v", err)
+	}
 	if !ts.IsAllowed("pubkey-1") {
 		t.Error("verified peer should be allowed")
 	}
@@ -51,7 +55,9 @@ func TestTrustStore_Persistence(t *testing.T) {
 
 	ts := NewTrustStore()
 	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
-	ts.SetTrust("pubkey-2", TrustVerified)
+	if err := ts.SetTrust("pubkey-2", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	if err := ts.SaveToFile(path); err != nil {
 		t.Fatalf("SaveToFile: %v", err)
@@ -267,7 +273,9 @@ func TestCleanExpiredNonces(t *testing.T) {
 
 func TestTrustStore_Pinned(t *testing.T) {
 	ts := NewTrustStore()
-	ts.SetTrust("pubkey-1", TrustPinned)
+	if err := ts.SetTrust("pubkey-1", TrustPinned); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	if !ts.IsAllowed("pubkey-1") {
 		t.Error("pinned peer should be allowed")
@@ -281,7 +289,9 @@ func TestTrustStore_ListEntries(t *testing.T) {
 	ts := NewTrustStore()
 	ts.TrustOnFirstUse("b-key", "2024-01-01")
 	ts.TrustOnFirstUse("a-key", "2024-01-02")
-	ts.SetTrust("c-key", TrustBlocked)
+	if err := ts.SetTrust("c-key", TrustBlocked); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	entries := ts.ListEntries()
 	if len(entries) != 3 {
@@ -317,7 +327,9 @@ func TestTrustStore_RemoveEntry(t *testing.T) {
 func TestTrustStore_ExportImport(t *testing.T) {
 	ts1 := NewTrustStore()
 	ts1.TrustOnFirstUse("pubkey-1", "2024-01-01")
-	ts1.SetTrust("pubkey-2", TrustVerified)
+	if err := ts1.SetTrust("pubkey-2", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	data, err := ts1.Export()
 	if err != nil {
@@ -352,7 +364,9 @@ func TestTrustStore_ImportRejectsInvalidLevel(t *testing.T) {
 
 func TestTrustStore_ImportDoesNotOverwrite(t *testing.T) {
 	ts := NewTrustStore()
-	ts.SetTrust("pubkey-1", TrustPinned)
+	if err := ts.SetTrust("pubkey-1", TrustPinned); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 
 	data := []byte(`{"pubkey-1": {"level": 1, "first_seen": "2024-01-01"}}`)
 	if err := ts.Import(data); err != nil {
@@ -407,7 +421,9 @@ func TestTrustStore_OnTrustChange(t *testing.T) {
 	})
 
 	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
-	ts.SetTrust("pubkey-1", TrustVerified)
+	if err := ts.SetTrust("pubkey-1", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 	ts.RemoveEntry("pubkey-1")
 
 	if len(changes) != 3 {

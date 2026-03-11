@@ -277,6 +277,8 @@ func (s *Selector) Close() error {
 		err2 = s.fallback.Close()
 	}
 
+	close(s.inbox)
+
 	if err1 != nil {
 		return err1
 	}

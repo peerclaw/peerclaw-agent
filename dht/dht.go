@@ -66,6 +66,15 @@ func (d *DHT) signMessage(msg *RPCMessage) {
 	msg.Signature = coreidentity.Sign(d.keypair.PrivateKey, payload)
 }
 
+// signResponse signs an RPCResponse using the DHT node's keypair.
+func (d *DHT) signResponse(resp *RPCResponse) {
+	if d.keypair == nil {
+		return
+	}
+	payload := resp.SigningPayload()
+	resp.Signature = coreidentity.Sign(d.keypair.PrivateKey, payload)
+}
+
 // verifyMessage verifies the signature on an incoming RPCMessage.
 // Returns an error if the signature is missing or invalid.
 func (d *DHT) verifyMessage(msg *RPCMessage) error {
@@ -297,6 +306,7 @@ func (d *DHT) handleRPC(ctx context.Context, msg RPCMessage) {
 			Sender:    d.self,
 			Error:     "invalid message signature",
 		}
+		d.signResponse(&resp)
 		if t, ok := d.transport.(*InMemoryTransport); ok {
 			t.DeliverResponse(msg.Sender, &resp)
 		}
@@ -336,6 +346,9 @@ func (d *DHT) handleRPC(ctx context.Context, msg RPCMessage) {
 	default:
 		resp.Error = fmt.Sprintf("unknown RPC type: %s", msg.Type)
 	}
+
+	// Sign the response before sending.
+	d.signResponse(&resp)
 
 	// Send response back via transport.
 	if t, ok := d.transport.(*InMemoryTransport); ok {

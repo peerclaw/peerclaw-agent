@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr/nip44"
 	"github.com/peerclaw/peerclaw-core/envelope"
@@ -176,10 +177,10 @@ func TestNostrTransport_Dedup(t *testing.T) {
 
 	// Simulate dedup
 	eventID := "abc123"
-	if _, loaded := nt.seenEvents.LoadOrStore(eventID, struct{}{}); loaded {
+	if _, loaded := nt.seenEvents.LoadOrStore(eventID, time.Now()); loaded {
 		t.Error("first store should not be loaded")
 	}
-	if _, loaded := nt.seenEvents.LoadOrStore(eventID, struct{}{}); !loaded {
+	if _, loaded := nt.seenEvents.LoadOrStore(eventID, time.Now()); !loaded {
 		t.Error("second store should be loaded (duplicate)")
 	}
 }

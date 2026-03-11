@@ -2,17 +2,24 @@ package security
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ReputationClaim represents a reputation assertion published via Nostr.
 type ReputationClaim struct {
+	ClaimID   string    `json:"claim_id"`   // unique claim identifier for replay protection
 	Issuer    string    `json:"issuer"`     // pubkey of the issuer
 	Subject   string    `json:"subject"`    // pubkey of the rated peer
 	Score     float64   `json:"score"`      // 0.0 - 1.0
 	Reason    string    `json:"reason"`     // brief description
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// maxClaimAge is the maximum age of a reputation claim before it is rejected.
+const maxClaimAge = 1 * time.Hour
 
 // NostrReputationKind is the Nostr event kind for reputation claims (NIP-78 application-specific data).
 const NostrReputationKind = 30078
@@ -28,6 +35,7 @@ type ReputationGossip struct {
 	store      *ReputationStore
 	trustStore *TrustStore
 	selfPubKey string
+	seenClaims sync.Map // claimID -> struct{} for replay protection
 }
 
 // NewReputationGossip creates a new gossip manager.
@@ -43,6 +51,7 @@ func NewReputationGossip(store *ReputationStore, trustStore *TrustStore, selfPub
 func (rg *ReputationGossip) CreateClaim(subjectPubKey string) *ReputationClaim {
 	score := rg.store.GetScore(subjectPubKey)
 	return &ReputationClaim{
+		ClaimID:   uuid.New().String(),
 		Issuer:    rg.selfPubKey,
 		Subject:   subjectPubKey,
 		Score:     score,
@@ -67,6 +76,8 @@ func UnmarshalClaim(data []byte) (*ReputationClaim, error) {
 // ProcessClaim processes an incoming reputation claim from another peer.
 // It only accepts claims from peers with TrustVerified or higher,
 // and applies SecondHandReputationWeight to the score.
+// Returns false if the claim is rejected (untrusted issuer, self-issued,
+// duplicate, or stale).
 func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 	// Only accept claims from trusted peers.
 	issuerTrust := rg.trustStore.Check(claim.Issuer)
@@ -79,12 +90,20 @@ func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 		return false
 	}
 
-	// Apply second-hand weight: blend with existing score.
-	currentScore := rg.store.GetScore(claim.Subject)
-	weightedScore := currentScore*(1-SecondHandReputationWeight) + claim.Score*SecondHandReputationWeight
+	// Reject claims older than maxClaimAge.
+	if !claim.Timestamp.IsZero() && time.Since(claim.Timestamp) > maxClaimAge {
+		return false
+	}
 
-	// Use thread-safe SetScore instead of directly accessing internal fields.
-	rg.store.SetScore(claim.Subject, weightedScore)
+	// Reject duplicate claim IDs.
+	if claim.ClaimID != "" {
+		if _, loaded := rg.seenClaims.LoadOrStore(claim.ClaimID, struct{}{}); loaded {
+			return false
+		}
+	}
+
+	// Apply second-hand weight via EWMA blending.
+	rg.store.ApplyGossipScore(claim.Subject, claim.Score, SecondHandReputationWeight)
 
 	return true
 }

@@ -42,7 +42,9 @@ func TestReputationGossipProcessClaim(t *testing.T) {
 	}
 
 	// Verified issuer should be accepted.
-	ts.SetTrust("trusted-issuer", TrustVerified)
+	if err := ts.SetTrust("trusted-issuer", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 	claim2 := &ReputationClaim{
 		Issuer:  "trusted-issuer",
 		Subject: "target-peer",
@@ -63,7 +65,9 @@ func TestReputationGossipRejectSelfClaim(t *testing.T) {
 	ts := NewTrustStore()
 	rg := NewReputationGossip(rs, ts, "self-pubkey")
 
-	ts.SetTrust("self-pubkey", TrustVerified)
+	if err := ts.SetTrust("self-pubkey", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
 	claim := &ReputationClaim{
 		Issuer:  "self-pubkey",
 		Subject: "peer1",

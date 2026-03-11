@@ -134,7 +134,10 @@ func cmdVerify(storePath string, args []string) {
 		os.Exit(1)
 	}
 	ts := loadStore(storePath)
-	ts.SetTrust(args[0], security.TrustVerified)
+	if err := ts.SetTrust(args[0], security.TrustVerified); err != nil {
+		fmt.Fprintf(os.Stderr, "error setting trust: %v\n", err)
+		os.Exit(1)
+	}
 	saveStore(ts, storePath)
 	fmt.Printf("Peer %s marked as verified.\n", truncateKey(args[0]))
 }
@@ -145,7 +148,10 @@ func cmdPin(storePath string, args []string) {
 		os.Exit(1)
 	}
 	ts := loadStore(storePath)
-	ts.SetTrust(args[0], security.TrustPinned)
+	if err := ts.SetTrust(args[0], security.TrustPinned); err != nil {
+		fmt.Fprintf(os.Stderr, "error setting trust: %v\n", err)
+		os.Exit(1)
+	}
 	saveStore(ts, storePath)
 	fmt.Printf("Peer %s pinned.\n", truncateKey(args[0]))
 }
@@ -156,7 +162,10 @@ func cmdRevoke(storePath string, args []string) {
 		os.Exit(1)
 	}
 	ts := loadStore(storePath)
-	ts.SetTrust(args[0], security.TrustBlocked)
+	if err := ts.SetTrust(args[0], security.TrustBlocked); err != nil {
+		fmt.Fprintf(os.Stderr, "error setting trust: %v\n", err)
+		os.Exit(1)
+	}
 	saveStore(ts, storePath)
 	fmt.Printf("Peer %s blocked.\n", truncateKey(args[0]))
 }

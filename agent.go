@@ -335,8 +335,11 @@ func (a *Agent) Start(ctx context.Context) error {
 				return true
 			}
 			// Unknown peer: call owner's handler if registered.
-			if a.connRequestHandler != nil {
-				return a.connRequestHandler(ctx, &ConnectionRequest{
+			a.mu.RLock()
+			handler := a.connRequestHandler
+			a.mu.RUnlock()
+			if handler != nil {
+				return handler(ctx, &ConnectionRequest{
 					FromAgentID: peerID,
 					Timestamp:   time.Now(),
 				})
@@ -608,6 +611,8 @@ func (a *Agent) resolveInboxRelays(ctx context.Context, agentID string) (*peerIn
 
 // OnMessage registers a handler for incoming messages.
 func (a *Agent) OnMessage(handler MessageHandler) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.handler = handler
 }
 
@@ -791,27 +796,35 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 	}
 
 	// Fallback: call user handler.
-	if a.handler != nil {
-		a.handler(ctx, env)
+	a.mu.RLock()
+	handler := a.handler
+	a.mu.RUnlock()
+	if handler != nil {
+		handler(ctx, env)
 	}
 }
 
 // OnConnectionRequest registers a handler called when a non-whitelisted peer
 // requests a connection. The handler returns true to allow, false to deny.
 func (a *Agent) OnConnectionRequest(handler ConnectionRequestHandler) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.connRequestHandler = handler
 }
 
 // AddContact adds an agent to the whitelist with TrustVerified level.
-func (a *Agent) AddContact(agentID string) {
-	a.trustStore.SetTrust(agentID, security.TrustVerified)
+func (a *Agent) AddContact(agentID string) error {
+	return a.trustStore.SetTrust(agentID, security.TrustVerified)
 }
 
 // ImportContacts bulk-imports agent IDs as verified contacts.
-func (a *Agent) ImportContacts(agentIDs []string) {
+func (a *Agent) ImportContacts(agentIDs []string) error {
 	for _, id := range agentIDs {
-		a.trustStore.SetTrust(id, security.TrustVerified)
+		if err := a.trustStore.SetTrust(id, security.TrustVerified); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // RemoveContact removes an agent from the whitelist.
@@ -820,8 +833,8 @@ func (a *Agent) RemoveContact(agentID string) {
 }
 
 // BlockAgent explicitly blocks an agent.
-func (a *Agent) BlockAgent(agentID string) {
-	a.trustStore.SetTrust(agentID, security.TrustBlocked)
+func (a *Agent) BlockAgent(agentID string) error {
+	return a.trustStore.SetTrust(agentID, security.TrustBlocked)
 }
 
 // ListContacts returns all trust store entries.

@@ -36,6 +36,7 @@ type relayState struct {
 	relay     *nostr.Relay
 	failures  int
 	connected bool
+	cancelSub context.CancelFunc // cancels the current subscribeLoop goroutine
 	mu        sync.Mutex
 }
 
@@ -48,7 +49,7 @@ type NostrTransport struct {
 	agentID    string
 	inbox      chan *envelope.Envelope
 	logger     *slog.Logger
-	seenEvents sync.Map // event ID -> struct{} for dedup
+	seenEvents sync.Map // event ID -> time.Time for dedup + cleanup
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	mu         sync.Mutex
@@ -129,14 +130,22 @@ func (t *NostrTransport) Connect(ctx context.Context) error {
 		isConnected := rs.connected
 		rs.mu.Unlock()
 		if isConnected {
+			subCtx, subCancel := context.WithCancel(ctx)
+			rs.mu.Lock()
+			rs.cancelSub = subCancel
+			rs.mu.Unlock()
 			t.wg.Add(1)
-			go t.subscribeLoop(ctx, rs)
+			go t.subscribeLoop(subCtx, rs)
 		}
 	}
 
 	// Start health check loop.
 	t.wg.Add(1)
 	go t.healthCheckLoop(ctx)
+
+	// Start seen events cleanup loop.
+	t.wg.Add(1)
+	go t.startSeenEventsCleanup(ctx)
 
 	return nil
 }
@@ -236,10 +245,34 @@ func (t *NostrTransport) subscribeLoop(ctx context.Context, rs *relayState) {
 	}
 }
 
+// startSeenEventsCleanup periodically removes stale entries from seenEvents
+// to prevent unbounded memory growth.
+func (t *NostrTransport) startSeenEventsCleanup(ctx context.Context) {
+	defer t.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-30 * time.Minute)
+			t.seenEvents.Range(func(key, value any) bool {
+				if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+					t.seenEvents.Delete(key)
+				}
+				return true
+			})
+		}
+	}
+}
+
 func (t *NostrTransport) handleEvent(event *nostr.Event) {
 	// Dedup by event ID.
 	eventIDHex := event.ID.Hex()
-	if _, loaded := t.seenEvents.LoadOrStore(eventIDHex, struct{}{}); loaded {
+	if _, loaded := t.seenEvents.LoadOrStore(eventIDHex, time.Now()); loaded {
 		return
 	}
 
@@ -316,9 +349,20 @@ func (t *NostrTransport) checkRelayHealth(ctx context.Context) {
 			continue
 		}
 
-		// Start new subscription for reconnected relay.
+		// Cancel old subscribeLoop before starting a new one to prevent goroutine leaks.
+		rs.mu.Lock()
+		if rs.cancelSub != nil {
+			rs.cancelSub()
+		}
+		rs.mu.Unlock()
+
+		// Start new subscription for reconnected relay with a new child context.
+		subCtx, subCancel := context.WithCancel(ctx)
+		rs.mu.Lock()
+		rs.cancelSub = subCancel
+		rs.mu.Unlock()
 		t.wg.Add(1)
-		go t.subscribeLoop(ctx, rs)
+		go t.subscribeLoop(subCtx, rs)
 		t.logger.Info("relay reconnected", "url", rs.url)
 	}
 }

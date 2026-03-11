@@ -229,6 +229,8 @@ func (t *WebRTCTransport) Close() error {
 	}
 	t.closed = true
 
+	close(t.inbox)
+
 	if t.dc != nil {
 		t.dc.Close()
 	}

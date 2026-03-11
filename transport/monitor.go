@@ -38,9 +38,10 @@ type ConnectionMonitor struct {
 	startTime time.Time
 
 	// Callback for quality degradation.
-	onDegraded func(stats ConnectionStats)
-	degradeRTT time.Duration // RTT threshold to trigger callback
-	degradeLoss float64      // packet loss threshold
+	onDegraded  func(stats ConnectionStats)
+	degradeRTT  time.Duration // RTT threshold to trigger callback
+	degradeLoss float64       // packet loss threshold
+	degradeSem  chan struct{}  // semaphore to limit concurrent degradation callbacks
 }
 
 // MonitorOption configures a ConnectionMonitor.
@@ -67,6 +68,7 @@ func NewConnectionMonitor(opts ...MonitorOption) *ConnectionMonitor {
 	m := &ConnectionMonitor{
 		maxSamples: 100,
 		startTime:  time.Now(),
+		degradeSem: make(chan struct{}, 5),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -211,8 +213,16 @@ func (m *ConnectionMonitor) checkDegradation() {
 		if m.totalSent > 0 {
 			stats.PacketLoss = float64(m.totalLost) / float64(m.totalSent)
 		}
-		// Fire callback in a goroutine to avoid blocking.
+		// Fire callback in a goroutine to avoid blocking, with bounded concurrency.
 		cb := m.onDegraded
-		go cb(stats)
+		select {
+		case m.degradeSem <- struct{}{}:
+			go func() {
+				defer func() { <-m.degradeSem }()
+				cb(stats)
+			}()
+		default:
+			// Skip: too many in-flight degradation callbacks.
+		}
 	}
 }

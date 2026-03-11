@@ -118,9 +118,9 @@ func (rs *ReputationStore) ListEntries() []ReputationEntry {
 	return result
 }
 
-// SetScore sets the reputation score for a peer in a thread-safe manner.
-// This is the safe way to update scores from external sources (e.g., gossip).
-func (rs *ReputationStore) SetScore(pubKey string, score float64) {
+// setScoreInternal sets the reputation score for a peer directly, bypassing EWMA.
+// This is unexported to prevent external callers from bypassing the EWMA formula.
+func (rs *ReputationStore) setScoreInternal(pubKey string, score float64) {
 	if score < 0 {
 		score = 0
 	}
@@ -141,6 +141,27 @@ func (rs *ReputationStore) SetScore(pubKey string, score float64) {
 	}
 	entry.Score = score
 	entry.LastUpdated = time.Now().UTC()
+}
+
+// ApplyGossipScore blends a gossip-reported score with the existing score
+// using a weighted EWMA formula. This is the safe way to incorporate external
+// reputation data without allowing direct score overrides.
+func (rs *ReputationStore) ApplyGossipScore(peerID string, gossipScore float64, weight float64) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	entry, exists := rs.entries[peerID]
+	if !exists {
+		entry = &ReputationEntry{
+			PubKey: peerID,
+			Score:  0.5,
+		}
+		rs.entries[peerID] = entry
+	}
+	// Blend via weighted EWMA.
+	entry.Score = entry.Score*(1-weight) + gossipScore*weight
+	entry.Score = math.Max(0, math.Min(1, entry.Score))
+	entry.LastUpdated = time.Now()
 }
 
 // GetEntry returns the full reputation entry for a peer, or nil if not found.

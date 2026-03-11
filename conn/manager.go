@@ -40,8 +40,9 @@ type Config struct {
 type pendingConn struct {
 	peerID    string
 	transport *transport.WebRTCTransport
-	role      string      // "offerer" or "answerer"
+	role      string       // "offerer" or "answerer"
 	ready     chan struct{} // closed when DataChannel opens
+	closeOnce sync.Once
 	err       error
 	created   time.Time
 }
@@ -454,7 +455,7 @@ func (m *Manager) setupStateHandler(peerID string, wrtc *transport.WebRTCTranspo
 					go m.receiveLoop(peerID, wrtc)
 
 					m.logger.Info("P2P connection established", "peer", peerID, "role", pc.role)
-					close(pc.ready)
+					pc.closeOnce.Do(func() { close(pc.ready) })
 					return
 
 				case webrtc.ICEConnectionStateFailed:
@@ -467,7 +468,7 @@ func (m *Manager) setupStateHandler(peerID string, wrtc *transport.WebRTCTranspo
 
 					if stillPending {
 						pc.err = fmt.Errorf("ICE connection failed")
-						close(pc.ready)
+						pc.closeOnce.Do(func() { close(pc.ready) })
 					}
 					wrtc.Close()
 					m.logger.Warn("P2P connection failed", "peer", peerID)
@@ -483,7 +484,7 @@ func (m *Manager) setupStateHandler(peerID string, wrtc *transport.WebRTCTranspo
 
 					if stillPending {
 						pc.err = fmt.Errorf("ICE connection %s", state.String())
-						close(pc.ready)
+						pc.closeOnce.Do(func() { close(pc.ready) })
 					} else {
 						// Already registered peer — remove it.
 						m.peerManager.RemovePeer(peerID)
