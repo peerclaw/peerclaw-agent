@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
 	"github.com/peerclaw/peerclaw-core/protocol"
 )
 
@@ -247,7 +249,16 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// Generate a keypair for peer-1 and register it so message validation passes.
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
 	a.AddContact("peer-1")
+	a.peerManager.AddPeer(&peer.Peer{
+		ID:        "peer-1",
+		PublicKey: kp.PublicKeyString(),
+	})
 
 	var routerCalled, handlerCalled bool
 
@@ -261,12 +272,11 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 	})
 
 	// Envelope with capability → router handles, OnMessage not called.
-	env1 := &envelope.Envelope{
-		Source:    "peer-1",
-		Payload:  []byte("hi"),
-		Metadata: map[string]string{MetadataKeyCapability: "greet"},
-		Timestamp: time.Now(),
-	}
+	env1 := envelope.New("peer-1", "test", protocol.ProtocolA2A, []byte("hi"))
+	env1.Metadata[MetadataKeyCapability] = "greet"
+	env1.Nonce = "nonce-coexist-1"
+	env1.Timestamp = time.Now()
+	identity.SignEnvelope(env1, kp.PrivateKey)
 	a.HandleIncomingEnvelope(context.Background(), env1)
 
 	if !routerCalled {
@@ -278,12 +288,10 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 
 	// Envelope without capability → OnMessage handles.
 	routerCalled = false
-	env2 := &envelope.Envelope{
-		Source:    "peer-1",
-		Payload:  []byte("hello"),
-		Metadata: map[string]string{},
-		Timestamp: time.Now(),
-	}
+	env2 := envelope.New("peer-1", "test", protocol.ProtocolA2A, []byte("hello"))
+	env2.Nonce = "nonce-coexist-2"
+	env2.Timestamp = time.Now()
+	identity.SignEnvelope(env2, kp.PrivateKey)
 	a.HandleIncomingEnvelope(context.Background(), env2)
 
 	if routerCalled {

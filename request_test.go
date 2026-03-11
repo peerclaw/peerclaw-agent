@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
 	"github.com/peerclaw/peerclaw-core/protocol"
 )
 
@@ -204,7 +206,16 @@ func TestSendRequest_ResponseIntercepted(t *testing.T) {
 
 func TestSendRequest_NonMatchingResponsePassthrough(t *testing.T) {
 	a := newTestAgent(t)
+
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
 	a.AddContact("peer-1")
+	a.peerManager.AddPeer(&peer.Peer{
+		ID:        "peer-1",
+		PublicKey: kp.PublicKeyString(),
+	})
 
 	var userHandlerCalled bool
 	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
@@ -212,13 +223,12 @@ func TestSendRequest_NonMatchingResponsePassthrough(t *testing.T) {
 	})
 
 	// No pending request registered for this TraceID.
-	resp := &envelope.Envelope{
-		Source:      "peer-1",
-		MessageType: envelope.MessageTypeResponse,
-		TraceID:     "unrelated-trace",
-		Payload:    []byte("pong"),
-		Timestamp:  time.Now(),
-	}
+	resp := envelope.New("peer-1", a.ID(), protocol.ProtocolA2A, []byte("pong"))
+	resp.MessageType = envelope.MessageTypeResponse
+	resp.TraceID = "unrelated-trace"
+	resp.Nonce = "passthrough-nonce-1"
+	resp.Timestamp = time.Now()
+	identity.SignEnvelope(resp, kp.PrivateKey)
 	a.HandleIncomingEnvelope(context.Background(), resp)
 
 	if !userHandlerCalled {
@@ -328,20 +338,28 @@ func TestListTasks(t *testing.T) {
 
 func TestHandleIncomingEnvelope_A2AStateEvent(t *testing.T) {
 	a := newTestAgent(t)
+
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
 	a.AddContact("peer-1")
+	a.peerManager.AddPeer(&peer.Peer{
+		ID:        "peer-1",
+		PublicKey: kp.PublicKeyString(),
+	})
 
 	env := envelope.New(a.ID(), "peer-1", protocol.ProtocolA2A, []byte("hello"))
 	a.taskTracker.Submit(env)
 
 	// Simulate an A2A state event.
-	event := &envelope.Envelope{
-		Source:      "peer-1",
-		MessageType: envelope.MessageTypeEvent,
-		TraceID:     env.TraceID,
-		Payload:    []byte("{}"),
-		Metadata:   map[string]string{"a2a.state": string(TaskWorking)},
-		Timestamp:  time.Now(),
-	}
+	event := envelope.New("peer-1", a.ID(), protocol.ProtocolA2A, []byte("{}"))
+	event.MessageType = envelope.MessageTypeEvent
+	event.TraceID = env.TraceID
+	event.Metadata["a2a.state"] = string(TaskWorking)
+	event.Nonce = "a2a-state-nonce-1"
+	event.Timestamp = time.Now()
+	identity.SignEnvelope(event, kp.PrivateKey)
 
 	a.HandleIncomingEnvelope(context.Background(), event)
 

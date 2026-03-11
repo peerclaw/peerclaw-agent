@@ -464,8 +464,9 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	env.Timestamp = time.Now()
 	env.Source = a.agentID
 
-	// Sign the envelope payload.
-	env.Signature = identity.Sign(a.keypair.PrivateKey, env.Payload)
+	// Sign the full envelope (Source, Destination, Protocol, MessageType,
+	// Nonce, Timestamp, Payload) to prevent header tampering.
+	identity.SignEnvelope(env, a.keypair.PrivateKey)
 
 	// Encrypt if we have a session key for this peer.
 	a.mu.Lock()

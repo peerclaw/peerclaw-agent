@@ -47,26 +47,35 @@ func (v *MessageValidator) ValidateMessage(env *envelope.Envelope, pubKeyStr str
 		return fmt.Errorf("message timestamp outside acceptable window")
 	}
 
-	// Check replay (nonce).
-	if env.Nonce != "" {
-		v.mu.Lock()
-		if _, seen := v.nonces[env.Nonce]; seen {
-			v.mu.Unlock()
-			return fmt.Errorf("duplicate nonce: replay detected")
-		}
-		v.nonces[env.Nonce] = now
-		v.mu.Unlock()
+	// Nonce is mandatory for replay protection.
+	if env.Nonce == "" {
+		return fmt.Errorf("missing nonce: replay protection requires a nonce")
 	}
 
-	// Verify signature if present.
-	if env.Signature != "" && pubKeyStr != "" {
-		pubKey, err := identity.ParsePublicKey(pubKeyStr)
-		if err != nil {
-			return fmt.Errorf("parse public key: %w", err)
-		}
-		if err := identity.Verify(pubKey, env.Payload, env.Signature); err != nil {
-			return fmt.Errorf("signature verification failed: %w", err)
-		}
+	v.mu.Lock()
+	if _, seen := v.nonces[env.Nonce]; seen {
+		v.mu.Unlock()
+		return fmt.Errorf("duplicate nonce: replay detected")
+	}
+	v.nonces[env.Nonce] = now
+	v.mu.Unlock()
+
+	// Signature is mandatory. Reject unsigned messages.
+	if env.Signature == "" {
+		return fmt.Errorf("missing signature: all messages must be signed")
+	}
+	if pubKeyStr == "" {
+		return fmt.Errorf("unknown sender: cannot verify signature for %s", env.Source)
+	}
+
+	// Verify signature against the full envelope signing payload
+	// (Source, Destination, Protocol, MessageType, Nonce, Timestamp, Payload).
+	pubKey, err := identity.ParsePublicKey(pubKeyStr)
+	if err != nil {
+		return fmt.Errorf("parse public key: %w", err)
+	}
+	if err := identity.VerifyEnvelope(env, pubKey); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
 	}
 
 	return nil

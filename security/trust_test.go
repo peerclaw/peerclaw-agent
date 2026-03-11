@@ -103,20 +103,65 @@ func TestMessageValidator_TimestampFreshness(t *testing.T) {
 }
 
 func TestMessageValidator_ReplayProtection(t *testing.T) {
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
+	v := NewMessageValidator()
+	env := envelope.New("src", "dst", protocol.ProtocolA2A, []byte("{}"))
+	env.Nonce = "unique-nonce-123"
+	env.Timestamp = time.Now()
+	identity.SignEnvelope(env, kp.PrivateKey)
+
+	if err := v.ValidateMessage(env, kp.PublicKeyString()); err != nil {
+		t.Fatalf("first message should pass: %v", err)
+	}
+
+	err = v.ValidateMessage(env, kp.PublicKeyString())
+	if err == nil {
+		t.Error("replayed message should fail")
+	}
+}
+
+func TestMessageValidator_MissingNonce(t *testing.T) {
 	v := NewMessageValidator()
 	env := &envelope.Envelope{
 		Payload:   []byte("{}"),
 		Timestamp: time.Now(),
-		Nonce:     "unique-nonce-123",
+		Signature: "some-sig",
 	}
-
-	if err := v.ValidateMessage(env, ""); err != nil {
-		t.Fatalf("first message should pass: %v", err)
+	err := v.ValidateMessage(env, "some-key")
+	if err == nil {
+		t.Error("expected error for missing nonce")
 	}
+}
 
+func TestMessageValidator_MissingSignature(t *testing.T) {
+	v := NewMessageValidator()
+	env := &envelope.Envelope{
+		Payload:   []byte("{}"),
+		Timestamp: time.Now(),
+		Nonce:     "nonce-miss-sig",
+	}
+	err := v.ValidateMessage(env, "some-key")
+	if err == nil {
+		t.Error("expected error for missing signature")
+	}
+}
+
+func TestMessageValidator_UnknownSender(t *testing.T) {
+	v := NewMessageValidator()
+	env := &envelope.Envelope{
+		Source:    "unknown-agent",
+		Payload:   []byte("{}"),
+		Timestamp: time.Now(),
+		Nonce:     "nonce-unknown",
+		Signature: "some-sig",
+	}
 	err := v.ValidateMessage(env, "")
 	if err == nil {
-		t.Error("replayed message should fail")
+		t.Error("expected error for unknown sender (empty pubkey)")
 	}
 }
 
@@ -127,21 +172,56 @@ func TestMessageValidator_SignatureVerification(t *testing.T) {
 	}
 
 	payload := []byte(`{"message": "hello"}`)
-	sig := identity.Sign(kp.PrivateKey, payload)
-
 	env := envelope.New("src", "dst", protocol.ProtocolA2A, payload)
-	env.Signature = sig
+	env.Nonce = "test-nonce-1"
 	env.Timestamp = time.Now()
+	// Sign the full envelope (covers Source, Destination, Protocol,
+	// MessageType, Nonce, Timestamp, Payload).
+	identity.SignEnvelope(env, kp.PrivateKey)
 
 	v := NewMessageValidator()
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err != nil {
 		t.Fatalf("valid signature should pass: %v", err)
 	}
 
-	// Tamper with payload.
+	// Tamper with payload — signature over full envelope should fail.
 	env.Payload = []byte(`{"message": "tampered"}`)
+	env.Nonce = "test-nonce-2" // new nonce to avoid replay detection
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err == nil {
-		t.Error("tampered message should fail signature verification")
+		t.Error("tampered payload should fail signature verification")
+	}
+}
+
+func TestMessageValidator_SignatureCoversHeaders(t *testing.T) {
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
+	payload := []byte(`{"message": "hello"}`)
+	env := envelope.New("alice", "bob", protocol.ProtocolA2A, payload)
+	env.Nonce = "test-nonce-hdr-1"
+	env.Timestamp = time.Now()
+	identity.SignEnvelope(env, kp.PrivateKey)
+
+	v := NewMessageValidator()
+
+	// Tamper with Source — should invalidate signature.
+	env.Source = "mallory"
+	env.Nonce = "test-nonce-hdr-2"
+	if err := v.ValidateMessage(env, kp.PublicKeyString()); err == nil {
+		t.Error("tampered Source should fail signature verification")
+	}
+
+	// Restore Source, tamper with Destination.
+	env.Source = "alice"
+	env.Destination = "eve"
+	env.Nonce = "test-nonce-hdr-3"
+	identity.SignEnvelope(env, kp.PrivateKey) // re-sign with new dest
+	env.Destination = "bob"                   // then tamper
+	env.Nonce = "test-nonce-hdr-4"
+	if err := v.ValidateMessage(env, kp.PublicKeyString()); err == nil {
+		t.Error("tampered Destination should fail signature verification")
 	}
 }
 

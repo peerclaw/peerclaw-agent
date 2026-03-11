@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-agent/security"
 	"github.com/peerclaw/peerclaw-core/envelope"
+	"github.com/peerclaw/peerclaw-core/identity"
 	"github.com/peerclaw/peerclaw-core/protocol"
 )
 
@@ -125,8 +127,12 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	}
 
 	// Test HandleIncomingEnvelope.
-	// Whitelist peer1ID in a2's trust store so the message passes the whitelist check.
+	// Whitelist peer1ID in a2's trust store and register peer with public key.
 	a2.AddContact(peer1ID)
+	a2.peerManager.AddPeer(&peer.Peer{
+		ID:        peer1ID,
+		PublicKey: a1.PublicKey(),
+	})
 
 	var received *envelope.Envelope
 	a2.OnMessage(func(_ context.Context, e *envelope.Envelope) {
@@ -134,7 +140,10 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	})
 
 	env2 := envelope.New(peer1ID, peer2ID, protocol.ProtocolA2A, payload)
-	env2.Timestamp = time.Now() // required for message validation
+	env2.Nonce = "e2e-nonce-1"
+	env2.Timestamp = time.Now()
+	// Sign before encryption — validation runs after decryption.
+	identity.SignEnvelope(env2, a1.keypair.PrivateKey)
 	encrypted2, _ := sk.Encrypt(env2.Payload)
 	env2.Payload = encrypted2
 	env2.Encrypted = true
@@ -218,19 +227,27 @@ func TestHandleIncomingEnvelope_AcceptsWhitelisted(t *testing.T) {
 		ServerURL: "http://localhost:8080",
 	})
 
-	// Whitelist the peer.
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
+	// Whitelist the peer and register its public key.
 	a.AddContact("trusted-peer")
+	a.peerManager.AddPeer(&peer.Peer{
+		ID:        "trusted-peer",
+		PublicKey: kp.PublicKeyString(),
+	})
 
 	var received bool
 	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
 		received = true
 	})
 
-	env := &envelope.Envelope{
-		Source:    "trusted-peer",
-		Payload:  []byte("hello"),
-		Timestamp: time.Now(),
-	}
+	env := envelope.New("trusted-peer", "Agent", protocol.ProtocolA2A, []byte("hello"))
+	env.Nonce = "whitelist-nonce-1"
+	env.Timestamp = time.Now()
+	identity.SignEnvelope(env, kp.PrivateKey)
 	a.HandleIncomingEnvelope(context.Background(), env)
 
 	if !received {
@@ -269,33 +286,34 @@ func TestHandleIncomingEnvelope_RejectsReplayedNonce(t *testing.T) {
 		ServerURL: "http://localhost:8080",
 	})
 
+	kp, err := identity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+
 	a.AddContact("peer-1")
+	a.peerManager.AddPeer(&peer.Peer{
+		ID:        "peer-1",
+		PublicKey: kp.PublicKeyString(),
+	})
 
 	callCount := 0
 	a.OnMessage(func(_ context.Context, _ *envelope.Envelope) {
 		callCount++
 	})
 
-	env1 := &envelope.Envelope{
-		Source:    "peer-1",
-		Payload:  []byte("hello"),
-		Timestamp: time.Now(),
-		Nonce:    "unique-nonce-123",
-	}
+	env1 := envelope.New("peer-1", "Agent", protocol.ProtocolA2A, []byte("hello"))
+	env1.Nonce = "unique-nonce-123"
+	env1.Timestamp = time.Now()
+	identity.SignEnvelope(env1, kp.PrivateKey)
 	a.HandleIncomingEnvelope(context.Background(), env1)
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 call, got %d", callCount)
 	}
 
-	// Replay same nonce.
-	env2 := &envelope.Envelope{
-		Source:    "peer-1",
-		Payload:  []byte("hello"),
-		Timestamp: time.Now(),
-		Nonce:    "unique-nonce-123",
-	}
-	a.HandleIncomingEnvelope(context.Background(), env2)
+	// Replay same envelope (same nonce).
+	a.HandleIncomingEnvelope(context.Background(), env1)
 
 	if callCount != 1 {
 		t.Errorf("replayed message should be rejected, got %d calls", callCount)
