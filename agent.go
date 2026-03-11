@@ -119,6 +119,7 @@ type Agent struct {
 	sessionKeys        map[string]*security.SessionKey // peer public key -> session key
 	pendingRequests    map[string]chan *envelope.Envelope // traceID → response channel
 	taskTracker        *TaskTracker
+	router             *Router
 	handler            MessageHandler
 	connRequestHandler ConnectionRequestHandler
 	connManager        *conn.Manager
@@ -200,6 +201,7 @@ func New(opts Options) (*Agent, error) {
 		sessionKeys:     make(map[string]*security.SessionKey),
 		pendingRequests: make(map[string]chan *envelope.Envelope),
 		taskTracker:     NewTaskTracker(),
+		router:          NewRouter(logger),
 		msgCache:        mc,
 		logger:          logger,
 	}, nil
@@ -231,7 +233,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			Token:        a.opts.ClaimToken,
 			Name:         a.opts.Name,
 			PublicKey:    a.keypair.PublicKeyString(),
-			Capabilities: a.opts.Capabilities,
+			Capabilities: a.Capabilities(),
 			Protocols:    a.opts.Protocols,
 			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
 			Signature:    sig,
@@ -246,7 +248,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
 			Name:         a.opts.Name,
 			PublicKey:    a.keypair.PublicKeyString(),
-			Capabilities: a.opts.Capabilities,
+			Capabilities: a.Capabilities(),
 			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
 			Protocols:    a.opts.Protocols,
 		})
@@ -461,6 +463,35 @@ func (a *Agent) OnMessage(handler MessageHandler) {
 	a.handler = handler
 }
 
+// Handle registers a capability handler on the router.
+func (a *Agent) Handle(capability string, handler HandlerFunc) {
+	a.router.Handle(capability, handler)
+}
+
+// Use adds global middleware to the router.
+func (a *Agent) Use(mw ...Middleware) {
+	a.router.Use(mw...)
+}
+
+// Capabilities returns the deduplicated union of opts.Capabilities and router-registered capabilities.
+func (a *Agent) Capabilities() []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, c := range a.opts.Capabilities {
+		if _, ok := seen[c]; !ok {
+			seen[c] = struct{}{}
+			result = append(result, c)
+		}
+	}
+	for _, c := range a.router.Capabilities() {
+		if _, ok := seen[c]; !ok {
+			seen[c] = struct{}{}
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
 // ID returns the agent's registered ID.
 func (a *Agent) ID() string {
 	return a.agentID
@@ -579,7 +610,31 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 		}
 	}
 
-	// Call user handler.
+	// Dispatch through capability router.
+	matched, resp, routerErr := a.router.Dispatch(ctx, env)
+	if matched {
+		if routerErr != nil {
+			// Send an error response back to the caller.
+			errResp := envelope.NewResponse(env, []byte(routerErr.Error()))
+			errResp.MessageType = envelope.MessageTypeError
+			if sendErr := a.Send(ctx, errResp); sendErr != nil {
+				a.logger.Warn("failed to send error response", "error", sendErr)
+			}
+			return
+		}
+		if resp != nil {
+			// Auto-response: if Destination is empty, wrap with NewResponse.
+			if resp.Destination == "" {
+				resp = envelope.NewResponse(env, resp.Payload)
+			}
+			if sendErr := a.Send(ctx, resp); sendErr != nil {
+				a.logger.Warn("failed to send auto-response", "error", sendErr)
+			}
+		}
+		return // do not fallthrough to user handler
+	}
+
+	// Fallback: call user handler.
 	if a.handler != nil {
 		a.handler(ctx, env)
 	}
