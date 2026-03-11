@@ -341,6 +341,67 @@ func TestSend_RejectsNonWhitelistedDestination(t *testing.T) {
 	}
 }
 
+func TestNewSimple(t *testing.T) {
+	a, err := NewSimple("simple-agent", "http://localhost:8080")
+	if err != nil {
+		t.Fatalf("NewSimple: %v", err)
+	}
+	if a.PublicKey() == "" {
+		t.Error("expected non-empty public key")
+	}
+	if a.opts.Name != "simple-agent" {
+		t.Errorf("name = %q, want %q", a.opts.Name, "simple-agent")
+	}
+	if a.opts.ServerURL != "http://localhost:8080" {
+		t.Errorf("serverURL = %q, want %q", a.opts.ServerURL, "http://localhost:8080")
+	}
+}
+
+func TestNewSimple_WithCapabilities(t *testing.T) {
+	a, err := NewSimple("cap-agent", "http://localhost:8080", "process-invoice", "query-status")
+	if err != nil {
+		t.Fatalf("NewSimple: %v", err)
+	}
+	caps := a.Capabilities()
+	if len(caps) != 2 {
+		t.Fatalf("expected 2 capabilities, got %d", len(caps))
+	}
+	if caps[0] != "process-invoice" || caps[1] != "query-status" {
+		t.Errorf("capabilities = %v, want [process-invoice query-status]", caps)
+	}
+}
+
+func TestImportContacts(t *testing.T) {
+	a, _ := NewSimple("agent", "http://localhost:8080")
+	a.ImportContacts([]string{"agent-billing", "agent-audit", "agent-notify"})
+
+	entries := a.ListContacts()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 contacts, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.Level != security.TrustVerified {
+			t.Errorf("contact %s: level = %d, want TrustVerified", e.PublicKey, e.Level)
+		}
+	}
+}
+
+func TestImportContacts_Dedup(t *testing.T) {
+	a, _ := NewSimple("agent", "http://localhost:8080")
+	a.ImportContacts([]string{"agent-a", "agent-b", "agent-a"})
+
+	entries := a.ListContacts()
+	if len(entries) != 2 {
+		t.Errorf("expected 2 unique contacts, got %d", len(entries))
+	}
+	// Verify all are TrustVerified.
+	for _, e := range entries {
+		if e.Level != security.TrustVerified {
+			t.Errorf("contact %s: level = %d, want TrustVerified", e.PublicKey, e.Level)
+		}
+	}
+}
+
 func TestContactManagement(t *testing.T) {
 	a, _ := New(Options{
 		Name:      "Agent",

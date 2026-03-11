@@ -131,6 +131,16 @@ type Agent struct {
 	stopNonceCleaner   context.CancelFunc
 }
 
+// NewSimple creates an Agent with minimal configuration for enterprise intranet deployments.
+// It uses server-based discovery and signaling only (no Nostr, no DHT, no STUN/TURN).
+func NewSimple(name, serverURL string, capabilities ...string) (*Agent, error) {
+	return New(Options{
+		Name:         name,
+		ServerURL:    serverURL,
+		Capabilities: capabilities,
+	})
+}
+
 // New creates a new Agent with the given options.
 func New(opts Options) (*Agent, error) {
 	logger := opts.Logger
@@ -649,6 +659,13 @@ func (a *Agent) OnConnectionRequest(handler ConnectionRequestHandler) {
 // AddContact adds an agent to the whitelist with TrustVerified level.
 func (a *Agent) AddContact(agentID string) {
 	a.trustStore.SetTrust(agentID, security.TrustVerified)
+}
+
+// ImportContacts bulk-imports agent IDs as verified contacts.
+func (a *Agent) ImportContacts(agentIDs []string) {
+	for _, id := range agentIDs {
+		a.trustStore.SetTrust(id, security.TrustVerified)
+	}
 }
 
 // RemoveContact removes an agent from the whitelist.
