@@ -6,7 +6,7 @@ import (
 	"github.com/peerclaw/peerclaw-core/agentcard"
 )
 
-// AllTools returns the complete set of 8 PeerClaw skill tools with JSON Schema definitions.
+// AllTools returns the complete set of 12 PeerClaw skill tools with JSON Schema definitions.
 func AllTools() []agentcard.Tool {
 	return []agentcard.Tool{
 		{
@@ -150,6 +150,79 @@ func AllTools() []agentcard.Tool {
 					}
 				},
 				"required": ["destination", "payload"]
+			}`),
+		},
+		{
+			Name:        "send_request",
+			Description: "Send a synchronous request to an agent and wait for a response. Returns the response payload, source, and trace ID.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"destination": {
+						"type": "string",
+						"description": "The destination agent's ID"
+					},
+					"payload": {
+						"type": "string",
+						"description": "The request payload to send"
+					},
+					"protocol": {
+						"type": "string",
+						"enum": ["a2a", "mcp", "acp"],
+						"description": "Communication protocol (defaults to a2a)"
+					},
+					"timeout_secs": {
+						"type": "integer",
+						"description": "Timeout in seconds (default 30)"
+					}
+				},
+				"required": ["destination", "payload"]
+			}`),
+		},
+		{
+			Name:        "broadcast_message",
+			Description: "Send a message to multiple agents simultaneously. Returns per-destination success/failure results.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"destinations": {
+						"type": "array",
+						"items": {"type": "string"},
+						"description": "List of destination agent IDs"
+					},
+					"payload": {
+						"type": "string",
+						"description": "The message payload to broadcast"
+					},
+					"protocol": {
+						"type": "string",
+						"enum": ["a2a", "mcp", "acp"],
+						"description": "Communication protocol (defaults to a2a)"
+					}
+				},
+				"required": ["destinations", "payload"]
+			}`),
+		},
+		{
+			Name:        "get_task",
+			Description: "Get the current state of a tracked A2A task by its trace ID. Shows task lifecycle state (submitted, working, completed, failed).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"trace_id": {
+						"type": "string",
+						"description": "The trace ID of the task to look up"
+					}
+				},
+				"required": ["trace_id"]
+			}`),
+		},
+		{
+			Name:        "list_tasks",
+			Description: "List all tracked A2A tasks with their current states. Shows task IDs, agent IDs, and lifecycle states.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {}
 			}`),
 		},
 	}

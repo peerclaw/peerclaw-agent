@@ -139,6 +139,66 @@ type SendMessageOutput struct {
 	MessageID string `json:"message_id"`
 }
 
+// --- send_request ---
+
+// SendRequestInput is the input for the send_request tool.
+type SendRequestInput struct {
+	Destination string `json:"destination"`
+	Payload     string `json:"payload"`
+	Protocol    string `json:"protocol,omitempty"`
+	TimeoutSecs int    `json:"timeout_secs,omitempty"`
+}
+
+// SendRequestOutput is the output of send_request.
+type SendRequestOutput struct {
+	ResponsePayload string `json:"response_payload"`
+	Source          string `json:"source"`
+	TraceID         string `json:"trace_id"`
+}
+
+// --- broadcast_message ---
+
+// BroadcastInput is the input for the broadcast_message tool.
+type BroadcastInput struct {
+	Destinations []string `json:"destinations"`
+	Payload      string   `json:"payload"`
+	Protocol     string   `json:"protocol,omitempty"`
+}
+
+// BroadcastOutput is the output of broadcast_message.
+type BroadcastOutput struct {
+	Results []BroadcastDestResult `json:"results"`
+}
+
+// BroadcastDestResult is the result for a single destination in a broadcast.
+type BroadcastDestResult struct {
+	Destination string `json:"destination"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
+}
+
+// --- get_task / list_tasks ---
+
+// TaskInfo is a JSON-friendly view of a tracked task.
+type TaskInfo struct {
+	ID        string `json:"id"`
+	TraceID   string `json:"trace_id"`
+	AgentID   string `json:"agent_id"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// GetTaskInput is the input for the get_task tool.
+type GetTaskInput struct {
+	TraceID string `json:"trace_id"`
+}
+
+// ListTasksOutput is the output of list_tasks.
+type ListTasksOutput struct {
+	Tasks []TaskInfo `json:"tasks"`
+}
+
 // --- directory browse (used by httpclient for discover_agents fallback) ---
 
 // DirectoryRequest holds query parameters for browsing the agent directory.

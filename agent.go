@@ -117,6 +117,8 @@ type Agent struct {
 	trustStore         *security.TrustStore
 	msgValidator       *security.MessageValidator
 	sessionKeys        map[string]*security.SessionKey // peer public key -> session key
+	pendingRequests    map[string]chan *envelope.Envelope // traceID → response channel
+	taskTracker        *TaskTracker
 	handler            MessageHandler
 	connRequestHandler ConnectionRequestHandler
 	connManager        *conn.Manager
@@ -188,16 +190,18 @@ func New(opts Options) (*Agent, error) {
 	}
 
 	return &Agent{
-		opts:         opts,
-		keypair:      kp,
-		peerManager:  peer.NewManager(logger),
-		discovery:    disc,
-		signaling:    sig,
-		trustStore:   ts,
-		msgValidator: security.NewMessageValidator(),
-		sessionKeys:  make(map[string]*security.SessionKey),
-		msgCache:     mc,
-		logger:       logger,
+		opts:            opts,
+		keypair:         kp,
+		peerManager:     peer.NewManager(logger),
+		discovery:       disc,
+		signaling:       sig,
+		trustStore:      ts,
+		msgValidator:    security.NewMessageValidator(),
+		sessionKeys:     make(map[string]*security.SessionKey),
+		pendingRequests: make(map[string]chan *envelope.Envelope),
+		taskTracker:     NewTaskTracker(),
+		msgCache:        mc,
+		logger:          logger,
 	}, nil
 }
 
@@ -334,6 +338,12 @@ func (a *Agent) Stop(ctx context.Context) error {
 		return nil
 	}
 	a.running = false
+
+	// Close all pending request channels.
+	for traceID, ch := range a.pendingRequests {
+		close(ch)
+		delete(a.pendingRequests, traceID)
+	}
 	a.mu.Unlock()
 
 	// Stop nonce cleanup goroutine.
@@ -548,6 +558,27 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 		a.trustStore.TouchLastSeen(env.Source)
 	}
 
+	// Intercept responses for pending synchronous requests.
+	if env.MessageType == envelope.MessageTypeResponse && env.TraceID != "" {
+		a.mu.Lock()
+		ch, ok := a.pendingRequests[env.TraceID]
+		a.mu.Unlock()
+		if ok {
+			select {
+			case ch <- env:
+			default:
+			}
+			return
+		}
+	}
+
+	// Handle A2A task state events.
+	if env.MessageType == envelope.MessageTypeEvent && env.TraceID != "" && env.Metadata != nil {
+		if state, ok := env.Metadata["a2a.state"]; ok {
+			a.taskTracker.Update(env.TraceID, TaskState(state), nil)
+		}
+	}
+
 	// Call user handler.
 	if a.handler != nil {
 		a.handler(ctx, env)
@@ -591,6 +622,87 @@ func (a *Agent) resolvePeerPublicKey(agentID string) string {
 		return p.PublicKey
 	}
 	return ""
+}
+
+// SendRequest sends an envelope and waits for a response with the same TraceID.
+// It returns the response envelope or an error on timeout/context cancellation.
+func (a *Agent) SendRequest(ctx context.Context, env *envelope.Envelope, timeout time.Duration) (*envelope.Envelope, error) {
+	if env.TraceID == "" {
+		env.TraceID = uuid.New().String()
+	}
+
+	ch := make(chan *envelope.Envelope, 1)
+	a.mu.Lock()
+	a.pendingRequests[env.TraceID] = ch
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.pendingRequests, env.TraceID)
+		a.mu.Unlock()
+	}()
+
+	// Track as a task.
+	a.taskTracker.Submit(env)
+
+	if err := a.Send(ctx, env); err != nil {
+		a.taskTracker.Update(env.TraceID, TaskFailed, nil)
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			a.taskTracker.Update(env.TraceID, TaskFailed, nil)
+			return nil, fmt.Errorf("agent stopped while waiting for response")
+		}
+		a.taskTracker.Update(env.TraceID, TaskCompleted, resp)
+		return resp, nil
+	case <-timer.C:
+		a.taskTracker.Update(env.TraceID, TaskFailed, nil)
+		return nil, fmt.Errorf("request timed out after %s", timeout)
+	case <-ctx.Done():
+		a.taskTracker.Update(env.TraceID, TaskFailed, nil)
+		return nil, ctx.Err()
+	}
+}
+
+// Broadcast sends an envelope to multiple destinations concurrently.
+// Each destination gets a copy with a new ID. Returns a map of destination to error (nil for success).
+func (a *Agent) Broadcast(ctx context.Context, env *envelope.Envelope, destinations []string) map[string]error {
+	results := make(map[string]error, len(destinations))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, dest := range destinations {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			clone := *env
+			clone.ID = uuid.New().String()
+			clone.Destination = d
+			err := a.Send(ctx, &clone)
+			mu.Lock()
+			results[d] = err
+			mu.Unlock()
+		}(dest)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// GetTask returns a tracked task by its TraceID.
+func (a *Agent) GetTask(traceID string) (*Task, bool) {
+	return a.taskTracker.Get(traceID)
+}
+
+// ListTasks returns all tracked tasks.
+func (a *Agent) ListTasks() []*Task {
+	return a.taskTracker.List()
 }
 
 // Discover finds agents by capabilities on the platform.

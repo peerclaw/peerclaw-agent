@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/security"
@@ -16,11 +18,13 @@ type mockAgent struct {
 	publicKey string
 	contacts  []security.TrustEntry
 
-	discoverFn func(ctx context.Context, caps []string) ([]*discovery.DiscoverResult, error)
-	sendFn     func(ctx context.Context, env *envelope.Envelope) error
-	added      []string
-	removed    []string
-	blocked    []string
+	discoverFn    func(ctx context.Context, caps []string) ([]*discovery.DiscoverResult, error)
+	sendFn        func(ctx context.Context, env *envelope.Envelope) error
+	sendRequestFn func(ctx context.Context, env *envelope.Envelope, timeout time.Duration) (*envelope.Envelope, error)
+	broadcastFn   func(ctx context.Context, env *envelope.Envelope, destinations []string) map[string]error
+	added         []string
+	removed       []string
+	blocked       []string
 }
 
 func (m *mockAgent) ID() string        { return m.id }
@@ -40,12 +44,44 @@ func (m *mockAgent) Send(ctx context.Context, env *envelope.Envelope) error {
 	return nil
 }
 
+func (m *mockAgent) SendRequest(ctx context.Context, env *envelope.Envelope, timeout time.Duration) (*envelope.Envelope, error) {
+	if m.sendRequestFn != nil {
+		return m.sendRequestFn(ctx, env, timeout)
+	}
+	return nil, nil
+}
+
+func (m *mockAgent) Broadcast(ctx context.Context, env *envelope.Envelope, destinations []string) map[string]error {
+	if m.broadcastFn != nil {
+		return m.broadcastFn(ctx, env, destinations)
+	}
+	return make(map[string]error)
+}
+
 func (m *mockAgent) AddContact(agentID string)    { m.added = append(m.added, agentID) }
 func (m *mockAgent) RemoveContact(agentID string) { m.removed = append(m.removed, agentID) }
 func (m *mockAgent) BlockAgent(agentID string)     { m.blocked = append(m.blocked, agentID) }
 
 func (m *mockAgent) ListContacts() []security.TrustEntry {
 	return m.contacts
+}
+
+// mockTaskAPI implements TaskAPI for testing.
+type mockTaskAPI struct {
+	tasks map[string]*TaskInfo
+}
+
+func (m *mockTaskAPI) GetTask(traceID string) (*TaskInfo, bool) {
+	t, ok := m.tasks[traceID]
+	return t, ok
+}
+
+func (m *mockTaskAPI) ListTasks() []*TaskInfo {
+	result := make([]*TaskInfo, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		result = append(result, t)
+	}
+	return result
 }
 
 // parseResult is a test helper that unmarshals the Result wrapper.
@@ -60,8 +96,8 @@ func parseResult(t *testing.T, raw json.RawMessage) Result {
 
 func TestAllToolsCount(t *testing.T) {
 	tools := AllTools()
-	if len(tools) != 8 {
-		t.Fatalf("expected 8 tools, got %d", len(tools))
+	if len(tools) != 12 {
+		t.Fatalf("expected 12 tools, got %d", len(tools))
 	}
 }
 
@@ -114,8 +150,8 @@ func TestHandleDisabledTool(t *testing.T) {
 func TestAvailableToolsFiltering(t *testing.T) {
 	h := NewHandler(Options{Disabled: []string{"invoke_agent", "check_reputation"}})
 	tools := h.AvailableTools()
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %d", len(tools))
 	}
 	for _, tool := range tools {
 		if tool.Name == "invoke_agent" || tool.Name == "check_reputation" {
@@ -374,5 +410,239 @@ func TestHandleNoAgentConfigured(t *testing.T) {
 		if r.Success {
 			t.Errorf("%s: expected failure when no agent configured", tt.tool)
 		}
+	}
+}
+
+func TestHandleSendRequest(t *testing.T) {
+	mock := &mockAgent{
+		id: "self-agent",
+		sendRequestFn: func(ctx context.Context, env *envelope.Envelope, timeout time.Duration) (*envelope.Envelope, error) {
+			return envelope.NewResponse(env, []byte("pong")), nil
+		},
+	}
+	h := NewHandler(Options{Agent: mock})
+
+	input, _ := json.Marshal(SendRequestInput{
+		Destination: "peer-1",
+		Payload:     "ping",
+		TimeoutSecs: 10,
+	})
+	raw, err := h.Handle(context.Background(), "send_request", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, raw)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	var out SendRequestOutput
+	if err := json.Unmarshal(r.Data, &out); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if out.ResponsePayload != "pong" {
+		t.Errorf("expected response_payload pong, got %s", out.ResponsePayload)
+	}
+	if out.TraceID == "" {
+		t.Error("expected non-empty trace_id")
+	}
+}
+
+func TestHandleSendRequestMissingFields(t *testing.T) {
+	h := NewHandler(Options{Agent: &mockAgent{}})
+
+	// Missing destination
+	input, _ := json.Marshal(SendRequestInput{Payload: "ping"})
+	raw, _ := h.Handle(context.Background(), "send_request", input)
+	r := parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for missing destination")
+	}
+
+	// Missing payload
+	input, _ = json.Marshal(SendRequestInput{Destination: "peer-1"})
+	raw, _ = h.Handle(context.Background(), "send_request", input)
+	r = parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for missing payload")
+	}
+}
+
+func TestHandleBroadcast(t *testing.T) {
+	mock := &mockAgent{
+		id: "self-agent",
+		broadcastFn: func(ctx context.Context, env *envelope.Envelope, destinations []string) map[string]error {
+			result := make(map[string]error)
+			for _, d := range destinations {
+				if d == "bad-peer" {
+					result[d] = fmt.Errorf("connection refused")
+				} else {
+					result[d] = nil
+				}
+			}
+			return result
+		},
+	}
+	h := NewHandler(Options{Agent: mock})
+
+	input, _ := json.Marshal(BroadcastInput{
+		Destinations: []string{"peer-1", "bad-peer", "peer-3"},
+		Payload:      "hello all",
+	})
+	raw, err := h.Handle(context.Background(), "broadcast_message", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, raw)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	var out BroadcastOutput
+	if err := json.Unmarshal(r.Data, &out); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(out.Results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(out.Results))
+	}
+	if !out.Results[0].Success {
+		t.Error("expected peer-1 success")
+	}
+	if out.Results[1].Success {
+		t.Error("expected bad-peer failure")
+	}
+	if out.Results[1].Error == "" {
+		t.Error("expected error message for bad-peer")
+	}
+	if !out.Results[2].Success {
+		t.Error("expected peer-3 success")
+	}
+}
+
+func TestHandleBroadcastMissingFields(t *testing.T) {
+	h := NewHandler(Options{Agent: &mockAgent{}})
+
+	// Missing destinations
+	input, _ := json.Marshal(BroadcastInput{Payload: "hello"})
+	raw, _ := h.Handle(context.Background(), "broadcast_message", input)
+	r := parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for missing destinations")
+	}
+
+	// Missing payload
+	input, _ = json.Marshal(BroadcastInput{Destinations: []string{"peer-1"}})
+	raw, _ = h.Handle(context.Background(), "broadcast_message", input)
+	r = parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for missing payload")
+	}
+}
+
+func TestHandleGetTask(t *testing.T) {
+	taskAPI := &mockTaskAPI{
+		tasks: map[string]*TaskInfo{
+			"trace-1": {
+				ID:      "task-1",
+				TraceID: "trace-1",
+				AgentID: "peer-1",
+				State:   "completed",
+			},
+		},
+	}
+	h := NewHandler(Options{TaskAPI: taskAPI})
+
+	input, _ := json.Marshal(GetTaskInput{TraceID: "trace-1"})
+	raw, err := h.Handle(context.Background(), "get_task", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, raw)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	var out TaskInfo
+	if err := json.Unmarshal(r.Data, &out); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if out.TraceID != "trace-1" {
+		t.Errorf("expected trace_id trace-1, got %s", out.TraceID)
+	}
+	if out.State != "completed" {
+		t.Errorf("expected state completed, got %s", out.State)
+	}
+}
+
+func TestHandleGetTaskNotFound(t *testing.T) {
+	taskAPI := &mockTaskAPI{tasks: map[string]*TaskInfo{}}
+	h := NewHandler(Options{TaskAPI: taskAPI})
+
+	input, _ := json.Marshal(GetTaskInput{TraceID: "nonexistent"})
+	raw, _ := h.Handle(context.Background(), "get_task", input)
+	r := parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for nonexistent task")
+	}
+}
+
+func TestHandleGetTaskMissingTraceID(t *testing.T) {
+	h := NewHandler(Options{TaskAPI: &mockTaskAPI{tasks: map[string]*TaskInfo{}}})
+
+	input, _ := json.Marshal(GetTaskInput{})
+	raw, _ := h.Handle(context.Background(), "get_task", input)
+	r := parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for missing trace_id")
+	}
+}
+
+func TestHandleListTasks(t *testing.T) {
+	taskAPI := &mockTaskAPI{
+		tasks: map[string]*TaskInfo{
+			"trace-1": {ID: "task-1", TraceID: "trace-1", State: "completed"},
+			"trace-2": {ID: "task-2", TraceID: "trace-2", State: "working"},
+		},
+	}
+	h := NewHandler(Options{TaskAPI: taskAPI})
+
+	raw, err := h.Handle(context.Background(), "list_tasks", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := parseResult(t, raw)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	var out ListTasksOutput
+	if err := json.Unmarshal(r.Data, &out); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(out.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(out.Tasks))
+	}
+}
+
+func TestHandleTaskToolsNoTaskAPI(t *testing.T) {
+	h := NewHandler(Options{})
+
+	// get_task without TaskAPI
+	input, _ := json.Marshal(GetTaskInput{TraceID: "x"})
+	raw, _ := h.Handle(context.Background(), "get_task", input)
+	r := parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for get_task without TaskAPI")
+	}
+
+	// list_tasks without TaskAPI
+	raw, _ = h.Handle(context.Background(), "list_tasks", nil)
+	r = parseResult(t, raw)
+	if r.Success {
+		t.Error("expected failure for list_tasks without TaskAPI")
 	}
 }
