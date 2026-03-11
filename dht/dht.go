@@ -57,9 +57,9 @@ func NewDHT(self NodeInfo, transport DHTTransport, logger *slog.Logger, keypair 
 }
 
 // signMessage signs an RPCMessage using the DHT node's keypair.
-// If no keypair is configured, the message is returned unsigned.
 func (d *DHT) signMessage(msg *RPCMessage) {
 	if d.keypair == nil {
+		d.logger.Warn("DHT keypair not configured, messages will be unsigned")
 		return
 	}
 	payload := msg.SigningPayload()
@@ -67,10 +67,10 @@ func (d *DHT) signMessage(msg *RPCMessage) {
 }
 
 // verifyMessage verifies the signature on an incoming RPCMessage.
-// Returns an error if the signature is invalid. If no signature is present, it passes.
+// Returns an error if the signature is missing or invalid.
 func (d *DHT) verifyMessage(msg *RPCMessage) error {
 	if msg.Signature == "" {
-		return nil // No signature to verify.
+		return fmt.Errorf("unsigned DHT message from %s", msg.Sender.ID.Hex())
 	}
 	pubKey, err := coreidentity.ParsePublicKey(msg.Sender.PublicKey)
 	if err != nil {

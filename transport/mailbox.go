@@ -463,6 +463,12 @@ func (m *Mailbox) handleMailboxEvent(event *nostr.Event) {
 		return
 	}
 
+	// Verify Nostr event signature to prevent relay forgery.
+	if !event.VerifySignature() {
+		m.logger.Warn("mailbox event signature invalid", "event_id", eventIDHex)
+		return
+	}
+
 	// Decrypt NIP-44 content.
 	sharedKey, err := nip44.GenerateConversationKey(event.PubKey, m.nostrKeys.SecretKeyTyped())
 	if err != nil {

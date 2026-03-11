@@ -215,18 +215,30 @@ func (ts *TrustStore) Export() ([]byte, error) {
 }
 
 // Import merges entries from JSON bytes into the store.
-// Existing entries are overwritten by imported entries with the same key.
+// Existing entries are NOT overwritten — only new keys are imported.
+// Trust levels are validated; invalid values are rejected.
 func (ts *TrustStore) Import(data []byte) error {
 	var entries map[string]TrustEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return fmt.Errorf("unmarshal trust entries: %w", err)
 	}
 
+	// Validate trust levels before importing.
+	for k, v := range entries {
+		if v.Level < TrustUnknown || v.Level > TrustPinned {
+			return fmt.Errorf("invalid trust level %d for key %s", v.Level, k)
+		}
+	}
+
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	for k, v := range entries {
+		if _, exists := ts.trusted[k]; exists {
+			continue // Do not overwrite existing entries.
+		}
 		ts.trusted[k] = v
+		ts.onTrustChange(k, TrustUnknown, v.Level)
 	}
 	return nil
 }

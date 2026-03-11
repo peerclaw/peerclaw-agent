@@ -150,7 +150,7 @@ type Agent struct {
 	msgCache           *transport.MessageCache
 	agentID            string
 	logger             *slog.Logger
-	mu                 sync.Mutex
+	mu                 sync.RWMutex
 	running            bool
 	stopNonceCleaner   context.CancelFunc
 }
@@ -469,9 +469,9 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	identity.SignEnvelope(env, a.keypair.PrivateKey)
 
 	// Encrypt if we have a session key for this peer.
-	a.mu.Lock()
+	a.mu.RLock()
 	sk := a.sessionKeys[env.Destination]
-	a.mu.Unlock()
+	a.mu.RUnlock()
 
 	if sk != nil {
 		encrypted, err := sk.Encrypt(env.Payload)
@@ -687,9 +687,9 @@ func (a *Agent) DecryptEnvelope(env *envelope.Envelope) (*envelope.Envelope, err
 		return env, nil
 	}
 
-	a.mu.Lock()
+	a.mu.RLock()
 	sk := a.sessionKeys[env.Source]
-	a.mu.Unlock()
+	a.mu.RUnlock()
 
 	if sk == nil {
 		return nil, fmt.Errorf("no session key for peer %s", env.Source)
@@ -738,9 +738,9 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 
 	// Intercept responses for pending synchronous requests.
 	if env.MessageType == envelope.MessageTypeResponse && env.TraceID != "" {
-		a.mu.Lock()
+		a.mu.RLock()
 		ch, ok := a.pendingRequests[env.TraceID]
-		a.mu.Unlock()
+		a.mu.RUnlock()
 		if ok {
 			select {
 			case ch <- env:

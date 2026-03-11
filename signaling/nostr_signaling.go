@@ -268,6 +268,12 @@ func (ns *NostrSignaling) handleEvent(event *nostr.Event) {
 		return
 	}
 
+	// Verify Nostr event signature to prevent relay forgery.
+	if !event.VerifySignature() {
+		ns.logger.Warn("nostr event signature invalid", "event_id", eventIDHex)
+		return
+	}
+
 	// Decrypt NIP-44 content.
 	sharedKey, err := nip44.GenerateConversationKey(event.PubKey, ns.nostrKeys.SecretKeyTyped())
 	if err != nil {

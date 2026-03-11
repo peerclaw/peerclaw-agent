@@ -342,6 +342,28 @@ func TestTrustStore_ExportImport(t *testing.T) {
 	}
 }
 
+func TestTrustStore_ImportRejectsInvalidLevel(t *testing.T) {
+	ts := NewTrustStore()
+	data := []byte(`{"bad-key": {"level": 99, "first_seen": "2024-01-01"}}`)
+	if err := ts.Import(data); err == nil {
+		t.Error("Import should reject invalid trust level")
+	}
+}
+
+func TestTrustStore_ImportDoesNotOverwrite(t *testing.T) {
+	ts := NewTrustStore()
+	ts.SetTrust("pubkey-1", TrustPinned)
+
+	data := []byte(`{"pubkey-1": {"level": 1, "first_seen": "2024-01-01"}}`)
+	if err := ts.Import(data); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	if ts.Check("pubkey-1") != TrustPinned {
+		t.Error("existing entry should NOT be overwritten by import")
+	}
+}
+
 func TestTrustStore_LastSeen(t *testing.T) {
 	ts := NewTrustStore()
 	ts.TrustOnFirstUse("pubkey-1", "2024-01-01")

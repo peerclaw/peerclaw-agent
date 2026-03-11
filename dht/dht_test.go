@@ -5,21 +5,29 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	coreidentity "github.com/peerclaw/peerclaw-core/identity"
 )
 
-func makeTestNode(name string) NodeInfo {
-	return NodeInfo{
-		ID:        NodeIDFromPublicKey(name),
-		PublicKey: name,
+func makeTestNode(t *testing.T) (NodeInfo, *coreidentity.Keypair) {
+	t.Helper()
+	kp, err := coreidentity.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
 	}
+	pubKey := kp.PublicKeyString()
+	return NodeInfo{
+		ID:        NodeIDFromPublicKey(pubKey),
+		PublicKey: pubKey,
+	}, kp
 }
 
 func TestDHTBootstrap(t *testing.T) {
 	ctx := context.Background()
 
-	nodeA := makeTestNode("nodeA")
-	nodeB := makeTestNode("nodeB")
-	nodeC := makeTestNode("nodeC")
+	nodeA, kpA := makeTestNode(t)
+	nodeB, kpB := makeTestNode(t)
+	nodeC, kpC := makeTestNode(t)
 
 	tA := NewInMemoryTransport(nodeA, nil)
 	tB := NewInMemoryTransport(nodeB, nil)
@@ -29,9 +37,9 @@ func TestDHTBootstrap(t *testing.T) {
 	tA.Connect(tC)
 	tB.Connect(tC)
 
-	dhtA := NewDHT(nodeA, tA, nil)
-	dhtB := NewDHT(nodeB, tB, nil)
-	dhtC := NewDHT(nodeC, tC, nil)
+	dhtA := NewDHT(nodeA, tA, nil, kpA)
+	dhtB := NewDHT(nodeB, tB, nil, kpB)
+	dhtC := NewDHT(nodeC, tC, nil, kpC)
 
 	// Start B and C first so they can handle RPCs.
 	dhtB.Start(ctx)
@@ -53,15 +61,15 @@ func TestDHTBootstrap(t *testing.T) {
 func TestDHTPutGet(t *testing.T) {
 	ctx := context.Background()
 
-	nodeA := makeTestNode("putget-A")
-	nodeB := makeTestNode("putget-B")
+	nodeA, kpA := makeTestNode(t)
+	nodeB, kpB := makeTestNode(t)
 
 	tA := NewInMemoryTransport(nodeA, nil)
 	tB := NewInMemoryTransport(nodeB, nil)
 	tA.Connect(tB)
 
-	dhtA := NewDHT(nodeA, tA, nil)
-	dhtB := NewDHT(nodeB, tB, nil)
+	dhtA := NewDHT(nodeA, tA, nil, kpA)
+	dhtB := NewDHT(nodeB, tB, nil, kpB)
 
 	dhtA.Start(ctx)
 	dhtB.Start(ctx)
@@ -102,15 +110,15 @@ func TestDHTPutGet(t *testing.T) {
 func TestDHTFindNode(t *testing.T) {
 	ctx := context.Background()
 
-	nodeA := makeTestNode("find-A")
-	nodeB := makeTestNode("find-B")
+	nodeA, kpA := makeTestNode(t)
+	nodeB, kpB := makeTestNode(t)
 
 	tA := NewInMemoryTransport(nodeA, nil)
 	tB := NewInMemoryTransport(nodeB, nil)
 	tA.Connect(tB)
 
-	dhtA := NewDHT(nodeA, tA, nil)
-	dhtB := NewDHT(nodeB, tB, nil)
+	dhtA := NewDHT(nodeA, tA, nil, kpA)
+	dhtB := NewDHT(nodeB, tB, nil, kpB)
 
 	dhtA.Start(ctx)
 	dhtB.Start(ctx)
@@ -138,9 +146,9 @@ func TestDHTFindNode(t *testing.T) {
 }
 
 func TestDHTLocalStore(t *testing.T) {
-	nodeA := makeTestNode("local-A")
+	nodeA, kpA := makeTestNode(t)
 	tA := NewInMemoryTransport(nodeA, nil)
-	dhtA := NewDHT(nodeA, tA, nil)
+	dhtA := NewDHT(nodeA, tA, nil, kpA)
 
 	// Store locally.
 	dhtA.LocalStore().Put("local-key", []byte("local-value"), DefaultTTL, nodeA.PublicKey)
