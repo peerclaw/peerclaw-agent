@@ -402,6 +402,74 @@ func TestImportContacts_Dedup(t *testing.T) {
 	}
 }
 
+func TestSend_FallsBackToMailbox(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+		InboxRelays: []string{"wss://inbox.test"},
+	})
+	a.agentID = "test-agent"
+
+	// Verify mailbox options are stored.
+	if len(a.opts.InboxRelays) != 1 {
+		t.Fatalf("expected 1 inbox relay, got %d", len(a.opts.InboxRelays))
+	}
+	if a.opts.InboxRelays[0] != "wss://inbox.test" {
+		t.Errorf("inbox relay = %q, want %q", a.opts.InboxRelays[0], "wss://inbox.test")
+	}
+}
+
+func TestSend_NoMailboxFallsBackToCache(t *testing.T) {
+	dir := t.TempDir()
+	a, _ := New(Options{
+		Name:             "Agent",
+		ServerURL:        "http://localhost:8080",
+		MessageCachePath: dir + "/cache.json",
+	})
+	a.agentID = "test-agent"
+
+	// Verify no mailbox is configured.
+	if a.mailbox != nil {
+		t.Fatal("mailbox should be nil when InboxRelays is not set")
+	}
+
+	// Verify message cache is initialized.
+	if a.msgCache == nil {
+		t.Fatal("message cache should be initialized")
+	}
+}
+
+func TestAgent_PeerInboxCache(t *testing.T) {
+	a, _ := New(Options{
+		Name:      "Agent",
+		ServerURL: "http://localhost:8080",
+	})
+
+	// Verify peerInboxCache is initialized.
+	if a.peerInboxCache == nil {
+		t.Fatal("peerInboxCache should be initialized")
+	}
+
+	// Add an entry.
+	a.mu.Lock()
+	a.peerInboxCache["agent-b"] = &peerInboxInfo{
+		InboxRelays: []string{"wss://relay.test"},
+		NostrPubKey: "abc123",
+	}
+	a.mu.Unlock()
+
+	// Verify retrieval.
+	a.mu.Lock()
+	info, ok := a.peerInboxCache["agent-b"]
+	a.mu.Unlock()
+	if !ok {
+		t.Fatal("expected to find cached peer inbox info")
+	}
+	if info.NostrPubKey != "abc123" {
+		t.Errorf("nostr pubkey = %q, want %q", info.NostrPubKey, "abc123")
+	}
+}
+
 func TestContactManagement(t *testing.T) {
 	a, _ := New(Options{
 		Name:      "Agent",

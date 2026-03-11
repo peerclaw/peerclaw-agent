@@ -102,8 +102,30 @@ type Options struct {
 	// registration, binding itself to the user who generated the token.
 	ClaimToken string
 
+	// InboxRelays is a list of Nostr relay URLs for the offline mailbox.
+	// When non-empty, a Mailbox will be created for offline message delivery.
+	InboxRelays []string
+
+	// MailboxTTL is how long mailbox messages are retained (default 7 days).
+	MailboxTTL time.Duration
+
+	// InboxSyncInterval is how often the inbox is polled for new messages (default 5 minutes).
+	InboxSyncInterval time.Duration
+
+	// OutboxStatePath is the file path for persisting the outbox queue.
+	OutboxStatePath string
+
+	// LastSyncPath is the file path for persisting the last inbox sync timestamp.
+	LastSyncPath string
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
+}
+
+// peerInboxInfo caches a peer's Nostr inbox details for mailbox delivery.
+type peerInboxInfo struct {
+	InboxRelays []string
+	NostrPubKey string
 }
 
 // Agent is the top-level API that assembles all P2P SDK components:
@@ -123,6 +145,8 @@ type Agent struct {
 	handler            MessageHandler
 	connRequestHandler ConnectionRequestHandler
 	connManager        *conn.Manager
+	mailbox            *transport.Mailbox
+	peerInboxCache     map[string]*peerInboxInfo // agentID → inbox info
 	msgCache           *transport.MessageCache
 	agentID            string
 	logger             *slog.Logger
@@ -212,6 +236,7 @@ func New(opts Options) (*Agent, error) {
 		pendingRequests: make(map[string]chan *envelope.Envelope),
 		taskTracker:     NewTaskTracker(),
 		router:          NewRouter(logger),
+		peerInboxCache:  make(map[string]*peerInboxInfo),
 		msgCache:        mc,
 		logger:          logger,
 	}, nil
@@ -338,6 +363,30 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Initialize mailbox if inbox relays are configured.
+	if len(a.opts.InboxRelays) > 0 {
+		mb, err := transport.NewMailbox(transport.MailboxConfig{
+			InboxRelays:  a.opts.InboxRelays,
+			Ed25519Seed:  a.keypair.PrivateKey.Seed(),
+			AgentID:      a.agentID,
+			TTL:          a.opts.MailboxTTL,
+			SyncInterval: a.opts.InboxSyncInterval,
+			OutboxPath:   a.opts.OutboxStatePath,
+			LastSyncPath: a.opts.LastSyncPath,
+			Logger:       a.logger,
+		})
+		if err != nil {
+			a.logger.Warn("failed to initialize mailbox", "error", err)
+		} else {
+			mb.OnMessage(func(msgCtx context.Context, env *envelope.Envelope) {
+				a.HandleIncomingEnvelope(msgCtx, env)
+			})
+			mb.Start(ctx)
+			a.mailbox = mb
+			a.logger.Info("mailbox enabled", "inbox_relays", a.opts.InboxRelays)
+		}
+	}
+
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
 	return nil
 }
@@ -373,6 +422,11 @@ func (a *Agent) Stop(ctx context.Context) error {
 	// Stop connection orchestrator.
 	if a.connManager != nil {
 		a.connManager.Stop()
+	}
+
+	// Stop mailbox.
+	if a.mailbox != nil {
+		a.mailbox.Stop()
 	}
 
 	// Save message cache.
@@ -450,7 +504,25 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	}
 
 	// 3. Fallback: send via signaling relay (WebSocket bridge_message).
-	return a.sendViaRelay(ctx, env)
+	if err := a.sendViaRelay(ctx, env); err == nil {
+		return nil
+	}
+	a.logger.Debug("relay send failed, trying mailbox", "dest", env.Destination)
+
+	// 4. Fallback: send via Nostr mailbox (offline inbox).
+	if a.mailbox != nil {
+		if err := a.sendViaMailbox(ctx, env); err == nil {
+			return nil
+		}
+		a.logger.Debug("mailbox send failed", "dest", env.Destination)
+	}
+
+	// 5. Last resort: queue in local message cache.
+	if a.msgCache != nil {
+		return a.msgCache.Enqueue(env.Destination, env)
+	}
+
+	return fmt.Errorf("all delivery channels failed for %s", env.Destination)
 }
 
 // sendViaRelay sends an envelope through the signaling server as a bridge message.
@@ -466,6 +538,70 @@ func (a *Agent) sendViaRelay(ctx context.Context, env *envelope.Envelope) error 
 		Payload:   data,
 		Timestamp: time.Now(),
 	})
+}
+
+// sendViaMailbox sends an envelope via the Nostr mailbox channel.
+func (a *Agent) sendViaMailbox(ctx context.Context, env *envelope.Envelope) error {
+	info, err := a.resolveInboxRelays(ctx, env.Destination)
+	if err != nil {
+		return err
+	}
+	return a.mailbox.SendToInbox(ctx, env, info.InboxRelays, info.NostrPubKey)
+}
+
+// resolveInboxRelays looks up a peer's inbox relays and Nostr public key.
+// It checks the local cache first, then queries the discovery directory.
+func (a *Agent) resolveInboxRelays(ctx context.Context, agentID string) (*peerInboxInfo, error) {
+	a.mu.Lock()
+	if info, ok := a.peerInboxCache[agentID]; ok {
+		a.mu.Unlock()
+		return info, nil
+	}
+	a.mu.Unlock()
+
+	// Try to get from peer manager.
+	if p, ok := a.peerManager.GetPeer(agentID); ok {
+		if len(p.InboxRelays) > 0 && p.NostrPubKey != "" {
+			info := &peerInboxInfo{
+				InboxRelays: p.InboxRelays,
+				NostrPubKey: p.NostrPubKey,
+			}
+			a.mu.Lock()
+			a.peerInboxCache[agentID] = info
+			a.mu.Unlock()
+			return info, nil
+		}
+	}
+
+	// Query discovery for the agent card.
+	agents, err := a.discovery.Discover(ctx, discovery.DiscoverRequest{
+		Capabilities: []string{},
+		MaxResults:   100,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("discover for inbox relays: %w", err)
+	}
+
+	for _, card := range agents {
+		if card.ID == agentID {
+			if len(card.PeerClaw.InboxRelays) == 0 {
+				return nil, fmt.Errorf("agent %s has no inbox relays", agentID)
+			}
+			if card.PeerClaw.NostrPubKey == "" {
+				return nil, fmt.Errorf("agent %s has no Nostr public key", agentID)
+			}
+			info := &peerInboxInfo{
+				InboxRelays: card.PeerClaw.InboxRelays,
+				NostrPubKey: card.PeerClaw.NostrPubKey,
+			}
+			a.mu.Lock()
+			a.peerInboxCache[agentID] = info
+			a.mu.Unlock()
+			return info, nil
+		}
+	}
+
+	return nil, fmt.Errorf("agent %s not found in directory", agentID)
 }
 
 // OnMessage registers a handler for incoming messages.

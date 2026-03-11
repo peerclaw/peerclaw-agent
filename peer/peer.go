@@ -12,9 +12,11 @@ import (
 
 // Peer represents a connected remote agent.
 type Peer struct {
-	ID        string
-	PublicKey string
-	Transport transport.Transport
+	ID          string
+	PublicKey   string
+	Transport   transport.Transport
+	InboxRelays []string // Nostr relay URLs for offline mailbox delivery
+	NostrPubKey string   // Nostr secp256k1 public key (hex)
 }
 
 // PeerCallback is called when a peer event occurs.
