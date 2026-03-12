@@ -143,13 +143,13 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	env2 := envelope.New(peer1ID, peer2ID, protocol.ProtocolA2A, payload)
 	env2.Nonce = "e2e-nonce-1"
 	env2.Timestamp = time.Now()
-	// Sign before encryption — validation runs after decryption.
-	identity.SignEnvelope(env2, a1.keypair.PrivateKey)
+	// Encrypt-then-sign: encrypt payload first, then sign the ciphertext.
 	aad2 := []byte(env2.Source + "|" + env2.Destination + "|" + env2.Nonce)
 	encrypted2, _ := sk.EncryptWithAAD(env2.Payload, aad2)
 	env2.Payload = encrypted2
 	env2.Encrypted = true
 	env2.SenderX25519 = a1X25519
+	identity.SignEnvelope(env2, a1.keypair.PrivateKey)
 
 	a2.HandleIncomingEnvelope(ctx, env2)
 

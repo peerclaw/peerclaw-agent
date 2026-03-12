@@ -427,23 +427,20 @@ func (a *Agent) Stop(ctx context.Context) error {
 }
 
 // Send sends an envelope to a peer using P2P (preferred) or signaling relay (fallback).
-// The payload is signed, then encrypted if a session key exists for the peer.
+// The payload is encrypted (if a session key exists), then the envelope is signed
+// covering the ciphertext + headers (encrypt-then-sign for pre-authentication).
 func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	// Outbound whitelist check.
 	if !a.trustStore.IsAllowed(env.Destination) {
 		return fmt.Errorf("destination %s is not whitelisted", env.Destination)
 	}
 
-	// Set anti-replay fields before signing.
+	// Set anti-replay fields.
 	env.Nonce = uuid.New().String()
 	env.Timestamp = time.Now()
 	env.Source = a.agentID
 
-	// Sign the full envelope (Source, Destination, Protocol, MessageType,
-	// Nonce, Timestamp, Payload) to prevent header tampering.
-	identity.SignEnvelope(env, a.keypair.PrivateKey)
-
-	// Encrypt if we have a session key for this peer.
+	// Step 1: Encrypt payload if session key exists (encrypt-then-sign).
 	a.mu.RLock()
 	sk := a.sessionKeys[env.Destination]
 	a.mu.RUnlock()
@@ -462,6 +459,10 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 		}
 		env.SenderX25519 = x25519Pub
 	}
+
+	// Step 2: Sign the full envelope. When encrypted, the signature covers
+	// the ciphertext, enabling pre-authentication before decryption.
+	identity.SignEnvelope(env, a.keypair.PrivateKey)
 
 	// 1. Try existing P2P connection.
 	if err := a.peerManager.Send(ctx, env.Destination, env); err == nil {
@@ -663,6 +664,7 @@ func (a *Agent) X25519PublicKeyString() (string, error) {
 }
 
 // DecryptEnvelope decrypts an encrypted envelope using the session key.
+// Called after signature verification (encrypt-then-sign pattern).
 // Returns the decrypted envelope, or the original if not encrypted.
 // envelopeAAD builds additional associated data for AEAD encryption from envelope
 // metadata. This binds the ciphertext to the envelope's Source, Destination, and
@@ -695,21 +697,21 @@ func (a *Agent) DecryptEnvelope(env *envelope.Envelope) (*envelope.Envelope, err
 	return env, nil
 }
 
-// HandleIncomingEnvelope processes a received envelope: decrypts if needed,
-// validates, and passes to the user handler.
+// HandleIncomingEnvelope validates the signature (pre-authentication),
+// decrypts if needed, and dispatches to handlers.
 func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelope) {
-	// Decrypt if encrypted.
+	// Step 1: Validate signature FIRST — pre-authentication over ciphertext.
+	pubKeyStr := a.resolvePeerPublicKey(env.Source)
+	if err := a.msgValidator.ValidateMessage(env, pubKeyStr); err != nil {
+		a.logger.Warn("message validation failed", "source", env.Source, "error", err)
+		return
+	}
+
+	// Step 2: Decrypt if encrypted (identity already verified).
 	var err error
 	env, err = a.DecryptEnvelope(env)
 	if err != nil {
 		a.logger.Warn("failed to decrypt envelope", "source", env.Source, "error", err)
-		return
-	}
-
-	// Message validation: signature, replay, size, timestamp.
-	pubKeyStr := a.resolvePeerPublicKey(env.Source)
-	if err := a.msgValidator.ValidateMessage(env, pubKeyStr); err != nil {
-		a.logger.Warn("message validation failed", "source", env.Source, "error", err)
 		return
 	}
 
