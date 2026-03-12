@@ -66,36 +66,8 @@ type Options struct {
 	// If nil, a WebSocket Client is created using ServerURL.
 	Signaling pcsignaling.SignalingClient
 
-	// DHTEnabled enables DHT-based discovery alongside or instead of the server registry.
-	DHTEnabled bool
-
-	// DHTBootstrapNodes lists addresses of DHT bootstrap nodes.
-	DHTBootstrapNodes []string
-
-	// DHTStorePath is the file path for persisting DHT data.
-	DHTStorePath string
-
-	// ReputationEnabled enables per-peer reputation tracking.
-	ReputationEnabled bool
-
-	// ReputationStorePath is the file path for persisting reputation data.
-	ReputationStorePath string
-
-	// Serverless runs the agent without a central server.
-	// Uses DHT discovery + Nostr signaling exclusively.
-	Serverless bool
-
-	// ICEServers lists STUN/TURN server URLs for serverless WebRTC.
-	ICEServers []string
-
 	// MessageCachePath is the file path for persisting offline message cache.
 	MessageCachePath string
-
-	// IdentityAnchorEnabled enables on-chain identity anchoring.
-	IdentityAnchorEnabled bool
-
-	// IdentityRecoveryKeys lists public keys authorized for identity recovery.
-	IdentityRecoveryKeys []string
 
 	// ClaimToken is a one-time pairing code (e.g., "PCW-XXXX-XXXX") obtained from
 	// the platform. When set, the agent uses the claim flow instead of direct

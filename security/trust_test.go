@@ -314,22 +314,6 @@ func TestMessageValidator_SignatureCoversHeaders(t *testing.T) {
 	}
 }
 
-func TestWhitelistSandbox(t *testing.T) {
-	sb := NewWhitelistSandbox([]string{"search", "calculate"})
-
-	if !sb.IsAllowed("search") {
-		t.Error("search should be allowed")
-	}
-	if sb.IsAllowed("delete") {
-		t.Error("delete should not be allowed")
-	}
-
-	_, err := sb.Execute(nil, "delete", nil)
-	if err == nil {
-		t.Error("expected error for non-whitelisted command")
-	}
-}
-
 func TestCleanExpiredNonces(t *testing.T) {
 	v := NewMessageValidator()
 

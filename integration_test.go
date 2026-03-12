@@ -1,126 +1,17 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/peerclaw/peerclaw-core/envelope"
-	coreidentity "github.com/peerclaw/peerclaw-core/identity"
 	"github.com/peerclaw/peerclaw-core/protocol"
-	"github.com/peerclaw/peerclaw-agent/dht"
-	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/security"
 	"github.com/peerclaw/peerclaw-agent/transport"
 )
 
 func makeTestEnvelope(dest, content string) *envelope.Envelope {
 	return envelope.New("self", dest, protocol.ProtocolA2A, []byte(content))
-}
-
-func makeIntegrationTestNode(t *testing.T) (dht.NodeInfo, *coreidentity.Keypair) {
-	t.Helper()
-	kp, err := coreidentity.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("GenerateKeypair: %v", err)
-	}
-	pubKey := kp.PublicKeyString()
-	return dht.NodeInfo{
-		ID:        dht.NodeIDFromPublicKey(pubKey),
-		PublicKey: pubKey,
-	}, kp
-}
-
-// TestDHTOnlyDiscovery tests two agents discovering each other via DHT only (no server).
-func TestDHTOnlyDiscovery(t *testing.T) {
-	ctx := context.Background()
-
-	// Set up two DHT nodes with real keypairs.
-	nodeA, kpA := makeIntegrationTestNode(t)
-	nodeB, kpB := makeIntegrationTestNode(t)
-
-	tA := dht.NewInMemoryTransport(nodeA, nil)
-	tB := dht.NewInMemoryTransport(nodeB, nil)
-	tA.Connect(tB)
-
-	dhtA := dht.NewDHT(nodeA, tA, nil, kpA)
-	dhtB := dht.NewDHT(nodeB, tB, nil, kpB)
-
-	dhtA.Start(ctx)
-	dhtB.Start(ctx)
-	defer dhtA.Stop()
-	defer dhtB.Stop()
-
-	dhtA.Bootstrap(ctx, []dht.NodeInfo{nodeB})
-
-	// Create DHT discovery for both agents.
-	discA := discovery.NewDHTDiscovery(dhtA)
-	discB := discovery.NewDHTDiscovery(dhtB)
-
-	// Agent B registers.
-	_, err := discB.Register(ctx, discovery.RegisterRequest{
-		Name:         "Agent-B",
-		PublicKey:    "agent-b-pubkey",
-		Capabilities: []string{"chat", "translate"},
-		Endpoint:     discovery.EndpointReq{URL: "p2p://agent-b-pubkey"},
-	})
-	if err != nil {
-		t.Fatalf("Agent B register failed: %v", err)
-	}
-
-	// Agent A discovers Agent B by capability.
-	cards, err := discA.Discover(ctx, discovery.DiscoverRequest{
-		Capabilities: []string{"chat"},
-	})
-	if err != nil {
-		t.Fatalf("Agent A discover failed: %v", err)
-	}
-
-	if len(cards) != 1 {
-		t.Fatalf("expected 1 discovered agent, got %d", len(cards))
-	}
-	if cards[0].Name != "Agent-B" {
-		t.Errorf("expected 'Agent-B', got %q", cards[0].Name)
-	}
-}
-
-// TestCompositeDiscoveryFallback tests that CompositeDiscovery falls back from server to DHT.
-func TestCompositeDiscoveryFallback(t *testing.T) {
-	ctx := context.Background()
-
-	// Set up DHT with real keypair.
-	nodeInfo, kp := makeIntegrationTestNode(t)
-	transport := dht.NewInMemoryTransport(nodeInfo, nil)
-	d := dht.NewDHT(nodeInfo, transport, nil, kp)
-	d.Start(ctx)
-	defer d.Stop()
-
-	dhtDisc := discovery.NewDHTDiscovery(d)
-
-	// Register an agent in DHT.
-	dhtDisc.Register(ctx, discovery.RegisterRequest{
-		Name:         "DHT-Agent",
-		PublicKey:    "dht-agent-pk",
-		Capabilities: []string{"search"},
-		Endpoint:     discovery.EndpointReq{URL: "p2p://dht-agent-pk"},
-	})
-
-	// Create a "broken" server discovery (will fail).
-	serverDisc := discovery.NewRegistryClient("http://localhost:1", nil)
-
-	// Composite should fall back to DHT.
-	composite := discovery.NewCompositeDiscovery(serverDisc, dhtDisc, nil)
-
-	cards, err := composite.Discover(ctx, discovery.DiscoverRequest{
-		Capabilities: []string{"search"},
-	})
-	if err != nil {
-		t.Fatalf("composite discover failed: %v", err)
-	}
-	if len(cards) != 1 || cards[0].Name != "DHT-Agent" {
-		t.Errorf("expected DHT-Agent from fallback, got %v", cards)
-	}
 }
 
 // TestReputationIsolation tests that a malicious peer is isolated via reputation.
@@ -191,38 +82,6 @@ func TestReputationGossipIntegration(t *testing.T) {
 	score := rsB.GetScore("bad-actor")
 	if score >= 0.5 {
 		t.Errorf("expected score < 0.5 after negative gossip, got %f", score)
-	}
-}
-
-// TestDHTPutGetAgentCard tests storing and retrieving agent cards from DHT.
-func TestDHTPutGetAgentCard(t *testing.T) {
-	ctx := context.Background()
-
-	node, kp := makeIntegrationTestNode(t)
-	tr := dht.NewInMemoryTransport(node, nil)
-	d := dht.NewDHT(node, tr, nil, kp)
-	d.Start(ctx)
-	defer d.Stop()
-
-	// Store a card.
-	card := map[string]interface{}{
-		"name":         "TestAgent",
-		"public_key":   "test-pk",
-		"capabilities": []string{"ai", "chat"},
-	}
-	cardData, _ := json.Marshal(card)
-	d.Put(ctx, "test-pk", cardData)
-
-	// Retrieve.
-	result, err := d.Get(ctx, "test-pk")
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-
-	var restored map[string]interface{}
-	json.Unmarshal(result, &restored)
-	if restored["name"] != "TestAgent" {
-		t.Errorf("expected 'TestAgent', got %v", restored["name"])
 	}
 }
 
