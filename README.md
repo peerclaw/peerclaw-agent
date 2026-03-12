@@ -113,7 +113,7 @@ for _, r := range results {
 | `agent.New(opts)` | Create a new Agent instance |
 | `agent.Start(ctx)` | Register with the platform and start accepting connections |
 | `agent.Stop(ctx)` | Unregister and close all connections |
-| `agent.Send(ctx, env)` | Send a signed and encrypted message to a peer |
+| `agent.Send(ctx, env)` | Encrypt and sign an envelope, then send to a peer |
 | `agent.OnMessage(handler)` | Register a message handler callback |
 | `agent.Discover(ctx, caps)` | Discover Agents by capabilities |
 | `agent.EstablishSession(peerID, peerX25519)` | Establish an E2E encrypted session |
@@ -150,11 +150,11 @@ On first connection, the peer's public key fingerprint is recorded in the local 
 
 ### 2. Message Level — Ed25519 Signing
 
-Every message is signed with the sender's private key. The receiver verifies the signature using the sender's public key, ensuring the message has not been tampered with and its origin is authentic.
+Every message is signed with the sender's private key. The signature covers the full envelope (headers + payload). For encrypted messages, the signature covers the ciphertext (encrypt-then-sign), enabling the receiver to verify sender identity before performing decryption.
 
 ### 3. Transport Level — End-to-End Encryption
 
-X25519 public keys are exchanged during the signaling handshake. A shared secret is derived via ECDH and used with XChaCha20-Poly1305 to encrypt message payloads. Nostr transport additionally wraps messages in NIP-44 format.
+X25519 public keys are exchanged during the signaling handshake. A shared secret is derived via ECDH and used with XChaCha20-Poly1305 to encrypt message payloads. The encrypt-then-sign pattern prevents decryption-oracle attacks by allowing pre-authentication. Nostr transport additionally wraps messages in NIP-44 format.
 
 ### 4. Execution Level — Sandboxing
 
