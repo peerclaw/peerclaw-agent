@@ -197,13 +197,14 @@ func (m *Manager) Connect(ctx context.Context, peerID string) error {
 		return fmt.Errorf("create offer: %w", err)
 	}
 
-	// Send offer via signaling, including X25519 public key.
+	// Send offer via signaling, including X25519 public key and DTLS fingerprint.
 	if err := m.signaling.Send(m.ctx, pcsignaling.SignalMessage{
 		Type:            pcsignaling.MessageTypeOffer,
 		From:            m.agentID,
 		To:              peerID,
 		SDP:             offer.SDP,
 		X25519PublicKey: m.x25519PubKey,
+		DTLSFingerprint: wrtc.DTLSFingerprint(),
 		Timestamp:       time.Now(),
 	}); err != nil {
 		m.cleanupPending(peerID)
@@ -337,13 +338,21 @@ func (m *Manager) handleOffer(msg pcsignaling.SignalMessage) {
 		return
 	}
 
-	// Send answer via signaling, including X25519 public key.
+	// Verify offerer's DTLS fingerprint against the remote SDP (set during CreateAnswer).
+	if err := wrtc.VerifyRemoteDTLSFingerprint(msg.DTLSFingerprint); err != nil {
+		m.logger.Error("DTLS fingerprint verification failed for offer", "peer", peerID, "error", err)
+		m.cleanupPending(peerID)
+		return
+	}
+
+	// Send answer via signaling, including X25519 public key and DTLS fingerprint.
 	if err := m.signaling.Send(m.ctx, pcsignaling.SignalMessage{
 		Type:            pcsignaling.MessageTypeAnswer,
 		From:            m.agentID,
 		To:              peerID,
 		SDP:             answer.SDP,
 		X25519PublicKey: m.x25519PubKey,
+		DTLSFingerprint: wrtc.DTLSFingerprint(),
 		Timestamp:       time.Now(),
 	}); err != nil {
 		m.logger.Error("failed to send answer", "error", err)
@@ -382,6 +391,14 @@ func (m *Manager) handleAnswer(msg pcsignaling.SignalMessage) {
 		SDP:  msg.SDP,
 	}); err != nil {
 		m.logger.Error("failed to handle answer", "error", err)
+		pc.err = err
+		m.cleanupPending(peerID)
+		return
+	}
+
+	// Verify answerer's DTLS fingerprint against the remote SDP.
+	if err := pc.transport.VerifyRemoteDTLSFingerprint(msg.DTLSFingerprint); err != nil {
+		m.logger.Error("DTLS fingerprint verification failed for answer", "peer", peerID, "error", err)
 		pc.err = err
 		m.cleanupPending(peerID)
 		return

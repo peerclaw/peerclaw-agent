@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/peerclaw/peerclaw-core/envelope"
@@ -123,6 +124,55 @@ func (t *WebRTCTransport) AddICECandidate(candidate webrtc.ICECandidateInit) err
 	return t.pc.AddICECandidate(candidate)
 }
 
+// DTLSFingerprint returns the local DTLS certificate fingerprint in "sha-256 XX:XX:..." format.
+// Must be called after SetLocalDescription (i.e., after CreateOffer or CreateAnswer).
+func (t *WebRTCTransport) DTLSFingerprint() string {
+	certs := t.pc.GetConfiguration().Certificates
+	for _, cert := range certs {
+		fps, err := cert.GetFingerprints()
+		if err != nil || len(fps) == 0 {
+			continue
+		}
+		return fps[0].Algorithm + " " + fps[0].Value
+	}
+	// Fallback: parse from local SDP.
+	if desc := t.pc.LocalDescription(); desc != nil {
+		return extractFingerprintFromSDP(desc.SDP)
+	}
+	return ""
+}
+
+// VerifyRemoteDTLSFingerprint checks that the expected fingerprint matches the remote SDP.
+// Returns nil if matched or if expected is empty (backward compatible).
+func (t *WebRTCTransport) VerifyRemoteDTLSFingerprint(expected string) error {
+	if expected == "" {
+		return nil
+	}
+	desc := t.pc.RemoteDescription()
+	if desc == nil {
+		return fmt.Errorf("no remote description set")
+	}
+	actual := extractFingerprintFromSDP(desc.SDP)
+	if actual == "" {
+		return fmt.Errorf("no DTLS fingerprint in remote SDP")
+	}
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("DTLS fingerprint mismatch: expected %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+// extractFingerprintFromSDP parses the first a=fingerprint line from an SDP string.
+func extractFingerprintFromSDP(sdp string) string {
+	for _, line := range strings.Split(sdp, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "a=fingerprint:") {
+			return strings.TrimPrefix(line, "a=fingerprint:")
+		}
+	}
+	return ""
+}
+
 // OnICECandidate sets a handler for local ICE candidates.
 func (t *WebRTCTransport) OnICECandidate(handler func(*webrtc.ICECandidate)) {
 	t.pc.OnICECandidate(handler)
@@ -141,6 +191,12 @@ func (t *WebRTCTransport) setupDataChannel(dc *webrtc.DataChannel) {
 		var env envelope.Envelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {
 			t.logger.Warn("invalid envelope on data channel", "error", err)
+			return
+		}
+		t.mu.Lock()
+		closed := t.closed
+		t.mu.Unlock()
+		if closed {
 			return
 		}
 		select {
@@ -238,10 +294,10 @@ func (t *WebRTCTransport) Close() error {
 	}
 	t.closed = true
 
-	close(t.inbox)
-
+	// Close data channel first to stop OnMessage callbacks before closing inbox.
 	if t.dc != nil {
 		t.dc.Close()
 	}
+	close(t.inbox)
 	return t.pc.Close()
 }
