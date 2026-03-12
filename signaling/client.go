@@ -9,7 +9,7 @@ import (
 	"time"
 
 	pcsignaling "github.com/peerclaw/peerclaw-core/signaling"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // BridgeMessageHandler is called when a bridge_message is received.
