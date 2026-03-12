@@ -179,6 +179,8 @@ peerclaw-trust export -store trust.json -out backup.json # 导出
 peerclaw-trust import -store trust.json -in backup.json  # 导入
 ```
 
-## License
+## 许可证
 
-Apache-2.0
+基于 [Apache License 2.0](LICENSE) 开源。
+
+Copyright 2025 PeerClaw Contributors.

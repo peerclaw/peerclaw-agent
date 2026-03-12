@@ -181,4 +181,6 @@ peerclaw-trust import -store trust.json -in backup.json  # Import
 
 ## License
 
-Apache-2.0
+Licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2025 PeerClaw Contributors.
