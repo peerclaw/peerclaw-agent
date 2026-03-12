@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -75,6 +76,65 @@ func TestReputationGossipRejectSelfClaim(t *testing.T) {
 	}
 	if rg.ProcessClaim(claim) {
 		t.Error("should reject self-issued claim")
+	}
+}
+
+func TestReputationGossipRejectDuplicate(t *testing.T) {
+	rs := NewReputationStore()
+	ts := NewTrustStore()
+	rg := NewReputationGossip(rs, ts, "self-pubkey")
+
+	if err := ts.SetTrust("trusted-issuer", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+
+	claim := &ReputationClaim{
+		ClaimID: "claim-123",
+		Issuer:  "trusted-issuer",
+		Subject: "target-peer",
+		Score:   0.9,
+	}
+	if !rg.ProcessClaim(claim) {
+		t.Error("first claim should be accepted")
+	}
+
+	// Replay of same claim ID should be rejected.
+	if rg.ProcessClaim(claim) {
+		t.Error("duplicate claim should be rejected")
+	}
+}
+
+func TestReputationGossipRateLimit(t *testing.T) {
+	rs := NewReputationStore()
+	ts := NewTrustStore()
+	rg := NewReputationGossip(rs, ts, "self-pubkey")
+
+	if err := ts.SetTrust("trusted-issuer", TrustVerified); err != nil {
+		t.Fatalf("SetTrust: %v", err)
+	}
+
+	// Send maxClaimsPerIssuerPerMinute claims — all should pass.
+	for i := 0; i < maxClaimsPerIssuerPerMinute; i++ {
+		claim := &ReputationClaim{
+			ClaimID: fmt.Sprintf("rate-claim-%d", i),
+			Issuer:  "trusted-issuer",
+			Subject: "target-peer",
+			Score:   0.8,
+		}
+		if !rg.ProcessClaim(claim) {
+			t.Errorf("claim %d should be accepted (within rate limit)", i)
+		}
+	}
+
+	// Next claim from same issuer should be rate-limited.
+	claim := &ReputationClaim{
+		ClaimID: "rate-claim-overflow",
+		Issuer:  "trusted-issuer",
+		Subject: "target-peer",
+		Score:   0.8,
+	}
+	if rg.ProcessClaim(claim) {
+		t.Error("claim exceeding rate limit should be rejected")
 	}
 }
 

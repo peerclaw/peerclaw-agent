@@ -30,12 +30,24 @@ const DefaultSecondHandWeight = 0.3
 // MinTrustForGossip is the minimum trust level required to accept gossip from a peer.
 const MinTrustForGossip = TrustVerified
 
+// maxClaimsPerIssuerPerMinute is the rate limit for reputation claims per issuer.
+const maxClaimsPerIssuerPerMinute = 10
+
+// seenClaimsTTL is how long seen claim IDs are retained for replay protection.
+const seenClaimsTTL = 2 * time.Hour
+
+// issuerRateEntry tracks the rate of claims from a single issuer.
+type issuerRateEntry struct {
+	timestamps []time.Time
+}
+
 // ReputationGossip manages publishing and consuming reputation claims via Nostr.
 type ReputationGossip struct {
 	store            *ReputationStore
 	trustStore       *TrustStore
 	selfPubKey       string
-	seenClaims       sync.Map // claimID -> struct{} for replay protection
+	seenClaims       sync.Map // claimID -> time.Time for replay protection with TTL
+	issuerRates      sync.Map // issuer pubkey -> *issuerRateEntry for rate limiting
 	SecondHandWeight float64  // Configurable weight for second-hand reputation claims
 }
 
@@ -79,7 +91,7 @@ func UnmarshalClaim(data []byte) (*ReputationClaim, error) {
 // It only accepts claims from peers with TrustVerified or higher,
 // and applies the configurable SecondHandWeight to the score.
 // Returns false if the claim is rejected (untrusted issuer, self-issued,
-// duplicate, or stale).
+// duplicate, stale, or rate-limited).
 func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 	// Only accept claims from trusted peers.
 	issuerTrust := rg.trustStore.Check(claim.Issuer)
@@ -97,15 +109,58 @@ func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 		return false
 	}
 
-	// Reject duplicate claim IDs.
+	// M-24: Reject duplicate claim IDs (replay protection) with timestamp tracking.
 	if claim.ClaimID != "" {
-		if _, loaded := rg.seenClaims.LoadOrStore(claim.ClaimID, struct{}{}); loaded {
+		if _, loaded := rg.seenClaims.LoadOrStore(claim.ClaimID, time.Now()); loaded {
 			return false
 		}
+	}
+
+	// M-24: Rate-limit per issuer (max 10 claims per minute).
+	if !rg.checkIssuerRate(claim.Issuer) {
+		return false
 	}
 
 	// Apply second-hand weight via EWMA blending.
 	rg.store.ApplyGossipScore(claim.Subject, claim.Score, rg.SecondHandWeight)
 
 	return true
+}
+
+// checkIssuerRate enforces per-issuer rate limiting.
+// Returns true if the claim is within the rate limit, false if it should be rejected.
+func (rg *ReputationGossip) checkIssuerRate(issuer string) bool {
+	now := time.Now()
+	cutoff := now.Add(-1 * time.Minute)
+
+	val, _ := rg.issuerRates.LoadOrStore(issuer, &issuerRateEntry{})
+	entry := val.(*issuerRateEntry)
+
+	// Filter out timestamps older than 1 minute.
+	var recent []time.Time
+	for _, ts := range entry.timestamps {
+		if ts.After(cutoff) {
+			recent = append(recent, ts)
+		}
+	}
+
+	if len(recent) >= maxClaimsPerIssuerPerMinute {
+		entry.timestamps = recent
+		return false
+	}
+
+	entry.timestamps = append(recent, now)
+	return true
+}
+
+// CleanSeenClaims removes stale entries from seenClaims to prevent unbounded growth.
+// Should be called periodically.
+func (rg *ReputationGossip) CleanSeenClaims() {
+	cutoff := time.Now().Add(-seenClaimsTTL)
+	rg.seenClaims.Range(func(key, value any) bool {
+		if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+			rg.seenClaims.Delete(key)
+		}
+		return true
+	})
 }

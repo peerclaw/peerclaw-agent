@@ -118,7 +118,9 @@ func (rs *ReputationStore) ListEntries() []ReputationEntry {
 	return result
 }
 
-// setScoreInternal sets the reputation score for a peer directly, bypassing EWMA.
+// setScoreInternal sets the reputation score for a peer. For new peers (no existing
+// entry), the score is set directly as initialization. For peers that already have
+// a score, the value is blended via EWMA to prevent bypassing the decay formula.
 // This is unexported to prevent external callers from bypassing the EWMA formula.
 func (rs *ReputationStore) setScoreInternal(pubKey string, score float64) {
 	if score < 0 {
@@ -133,13 +135,18 @@ func (rs *ReputationStore) setScoreInternal(pubKey string, score float64) {
 
 	entry, exists := rs.entries[pubKey]
 	if !exists {
+		// M-23: Direct set is only allowed for initialization (first score).
 		entry = &ReputationEntry{
 			PubKey: pubKey,
-			Score:  0.5,
+			Score:  score,
 		}
 		rs.entries[pubKey] = entry
+	} else {
+		// M-23: For existing entries, apply weighted EWMA blend instead of
+		// direct override to prevent bypassing the decay formula.
+		entry.Score = rs.decayFactor*score + (1-rs.decayFactor)*entry.Score
+		entry.Score = math.Max(0, math.Min(1, entry.Score))
 	}
-	entry.Score = score
 	entry.LastUpdated = time.Now().UTC()
 }
 

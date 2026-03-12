@@ -53,6 +53,17 @@ func (rt *RoutingTable) SetPingFunc(fn func(ctx context.Context, node NodeInfo) 
 }
 
 // SetPoWRequired enables or disables proof-of-work validation for new nodes.
+//
+// L-08: PoW is disabled by default (powRequired=false, powDifficulty=0).
+// This is a conscious trade-off: enabling PoW adds Sybil resistance at the cost
+// of slower node joins. For deployments exposed to the public internet, callers
+// should enable PoW with a low default difficulty (e.g., 8) to raise the cost
+// of Sybil attacks without significantly impacting legitimate nodes:
+//
+//	rt.SetPoWRequired(true, 8)
+//
+// For private/intranet deployments where node identities are already controlled,
+// PoW can remain disabled.
 func (rt *RoutingTable) SetPoWRequired(required bool, difficulty int) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

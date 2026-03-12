@@ -46,31 +46,51 @@ const DefaultTOFUExpiry = 30 * 24 * time.Hour // 30 days
 
 // TrustEntry records trust information about a peer.
 type TrustEntry struct {
-	PublicKey string     `json:"public_key"`
-	Level     TrustLevel `json:"level"`
-	FirstSeen string     `json:"first_seen"`
-	LastSeen  string     `json:"last_seen,omitempty"`
-	Alias     string     `json:"alias,omitempty"`
-	ExpiresAt time.Time  `json:"expires_at,omitempty"`
+	PublicKey  string     `json:"public_key"`
+	Level      TrustLevel `json:"level"`
+	FirstSeen  string     `json:"first_seen"`
+	LastSeen   string     `json:"last_seen,omitempty"`
+	Alias      string     `json:"alias,omitempty"`
+	ExpiresAt  time.Time  `json:"expires_at,omitempty"`
+	WasBlocked bool       `json:"was_blocked,omitempty"` // L-05: tracks if peer was previously blocked
 }
 
 // ErrInvalidTrustTransition is returned when a trust level transition is not allowed.
 var ErrInvalidTrustTransition = fmt.Errorf("invalid trust level transition")
 
 // ValidTrustTransition checks whether transitioning from one trust level to another
-// is allowed by the trust state machine. Invalid transitions:
-//   - TrustBlocked -> TrustPinned (must go through TrustVerified first)
-//   - TrustPinned -> TrustTOFU (downgrade not allowed)
+// is allowed by the trust state machine. Allowed transitions:
+//   - Unknown  -> TOFU, Verified, Pinned, Blocked
+//   - TOFU     -> Verified, Blocked
+//   - Verified -> Pinned, Blocked
+//   - Pinned   -> Blocked
+//   - Blocked  -> Unknown (explicit unblock only)
+//
+// All other transitions are rejected (e.g., Blocked->Verified, Blocked->Pinned,
+// Pinned->TOFU, Verified->TOFU, etc.).
 func ValidTrustTransition(from, to TrustLevel) bool {
-	// Blocked -> Pinned is not allowed (must go through Verified first).
-	if from == TrustBlocked && to == TrustPinned {
+	if from == to {
+		return true // no-op is always valid
+	}
+	switch from {
+	case TrustUnknown:
+		// Unknown can transition to any level.
+		return true
+	case TrustTOFU:
+		// TOFU can escalate to Verified or be Blocked.
+		return to == TrustVerified || to == TrustBlocked
+	case TrustVerified:
+		// Verified can escalate to Pinned or be Blocked.
+		return to == TrustPinned || to == TrustBlocked
+	case TrustPinned:
+		// Pinned can only be Blocked.
+		return to == TrustBlocked
+	case TrustBlocked:
+		// Blocked can only transition back to Unknown (explicit unblock).
+		return to == TrustUnknown
+	default:
 		return false
 	}
-	// Pinned -> TOFU is a downgrade and not allowed.
-	if from == TrustPinned && to == TrustTOFU {
-		return false
-	}
-	return true
 }
 
 // TrustStore manages TOFU trust relationships with peers.
@@ -114,12 +134,19 @@ func (ts *TrustStore) Check(pubKey string) TrustLevel {
 
 // TrustOnFirstUse records a new peer with TOFU trust if not already known.
 // The TOFU entry expires after DefaultTOFUExpiry (30 days).
+// L-05: If the peer was previously blocked (WasBlocked is true), auto-TOFU
+// is denied — the caller must use explicit verification (SetTrust) instead.
 // Returns the trust level (existing or newly created).
 func (ts *TrustStore) TrustOnFirstUse(pubKey, firstSeen string) TrustLevel {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	if entry, ok := ts.trusted[pubKey]; ok {
+		// L-05: If the entry exists as Unknown with WasBlocked set, reject
+		// auto-TOFU to prevent block/unblock bypass. Require explicit verification.
+		if entry.Level == TrustUnknown && entry.WasBlocked {
+			return TrustUnknown
+		}
 		return entry.Level
 	}
 	ts.trusted[pubKey] = TrustEntry{
@@ -148,12 +175,18 @@ func (ts *TrustStore) SetTrust(pubKey string, level TrustLevel) error {
 			TrustLevelString(oldLevel), TrustLevelString(level))
 	}
 
-	// Preserve original FirstSeen and ExpiresAt if the entry already exists (L-05).
+	// Preserve original FirstSeen and ExpiresAt if the entry already exists.
 	originalFirstSeen := entry.FirstSeen
 	originalExpiresAt := entry.ExpiresAt
 
 	entry.PublicKey = pubKey
 	entry.Level = level
+
+	// L-05: Track if the peer was ever blocked to prevent TOFU bypass
+	// via a block/unblock cycle.
+	if level == TrustBlocked {
+		entry.WasBlocked = true
+	}
 
 	if originalFirstSeen != "" {
 		entry.FirstSeen = originalFirstSeen

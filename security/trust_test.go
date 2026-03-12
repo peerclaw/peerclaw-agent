@@ -41,11 +41,94 @@ func TestTrustStore_SetTrust(t *testing.T) {
 		t.Error("blocked peer should not be allowed")
 	}
 
+	// M-14: Blocked->Verified is no longer allowed; must go Blocked->Unknown first.
+	if err := ts.SetTrust("pubkey-1", TrustVerified); err == nil {
+		t.Error("expected error for Blocked->Verified transition")
+	}
+
+	// Unblock first (Blocked->Unknown), then escalate.
+	if err := ts.SetTrust("pubkey-1", TrustUnknown); err != nil {
+		t.Fatalf("SetTrust to Unknown (unblock): %v", err)
+	}
 	if err := ts.SetTrust("pubkey-1", TrustVerified); err != nil {
-		t.Fatalf("SetTrust to Verified: %v", err)
+		t.Fatalf("SetTrust to Verified after unblock: %v", err)
 	}
 	if !ts.IsAllowed("pubkey-1") {
 		t.Error("verified peer should be allowed")
+	}
+}
+
+func TestTrustStore_TransitionStateMachine(t *testing.T) {
+	tests := []struct {
+		from    TrustLevel
+		to      TrustLevel
+		allowed bool
+	}{
+		// Unknown -> anything
+		{TrustUnknown, TrustTOFU, true},
+		{TrustUnknown, TrustVerified, true},
+		{TrustUnknown, TrustPinned, true},
+		{TrustUnknown, TrustBlocked, true},
+		// TOFU transitions
+		{TrustTOFU, TrustVerified, true},
+		{TrustTOFU, TrustBlocked, true},
+		{TrustTOFU, TrustPinned, false},  // must go through Verified first
+		{TrustTOFU, TrustUnknown, false}, // downgrade not allowed
+		// Verified transitions
+		{TrustVerified, TrustPinned, true},
+		{TrustVerified, TrustBlocked, true},
+		{TrustVerified, TrustTOFU, false},    // downgrade not allowed
+		{TrustVerified, TrustUnknown, false},  // downgrade not allowed
+		// Pinned transitions
+		{TrustPinned, TrustBlocked, true},
+		{TrustPinned, TrustVerified, false},  // downgrade not allowed
+		{TrustPinned, TrustTOFU, false},      // downgrade not allowed
+		{TrustPinned, TrustUnknown, false},   // downgrade not allowed
+		// Blocked transitions (only Unknown/unblock)
+		{TrustBlocked, TrustUnknown, true},
+		{TrustBlocked, TrustTOFU, false},
+		{TrustBlocked, TrustVerified, false},
+		{TrustBlocked, TrustPinned, false},
+		// Same level
+		{TrustUnknown, TrustUnknown, true},
+		{TrustTOFU, TrustTOFU, true},
+		{TrustVerified, TrustVerified, true},
+		{TrustPinned, TrustPinned, true},
+		{TrustBlocked, TrustBlocked, true},
+	}
+
+	for _, tt := range tests {
+		got := ValidTrustTransition(tt.from, tt.to)
+		if got != tt.allowed {
+			t.Errorf("ValidTrustTransition(%s, %s) = %v, want %v",
+				TrustLevelString(tt.from), TrustLevelString(tt.to), got, tt.allowed)
+		}
+	}
+}
+
+func TestTrustStore_WasBlockedPreventsAutoTOFU(t *testing.T) {
+	ts := NewTrustStore()
+
+	// Block a peer, then unblock.
+	if err := ts.SetTrust("pubkey-1", TrustBlocked); err != nil {
+		t.Fatalf("SetTrust to Blocked: %v", err)
+	}
+	if err := ts.SetTrust("pubkey-1", TrustUnknown); err != nil {
+		t.Fatalf("SetTrust to Unknown (unblock): %v", err)
+	}
+
+	// L-05: Auto-TOFU should be denied for previously blocked peers.
+	level := ts.TrustOnFirstUse("pubkey-1", "2024-01-01")
+	if level != TrustUnknown {
+		t.Errorf("expected TrustUnknown for previously blocked peer, got %s", TrustLevelString(level))
+	}
+
+	// Explicit verification should still work.
+	if err := ts.SetTrust("pubkey-1", TrustVerified); err != nil {
+		t.Fatalf("SetTrust to Verified (explicit): %v", err)
+	}
+	if ts.Check("pubkey-1") != TrustVerified {
+		t.Error("explicit verification should succeed for previously blocked peer")
 	}
 }
 
