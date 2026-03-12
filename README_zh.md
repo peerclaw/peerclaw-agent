@@ -2,6 +2,8 @@
 
 # peerclaw-agent
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 [PeerClaw](https://github.com/peerclaw/peerclaw) 身份与信任平台及 Agent Marketplace 的 P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型与消息签名验证。
 
 ## 核心特性
@@ -179,4 +181,4 @@ peerclaw-trust import -store trust.json -in backup.json  # 导入
 
 ## License
 
-MIT
+Apache-2.0
