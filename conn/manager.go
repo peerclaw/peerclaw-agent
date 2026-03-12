@@ -22,18 +22,22 @@ const (
 
 	// pendingConnTTL is the maximum time a pending connection can remain open.
 	pendingConnTTL = 30 * time.Second
+
+	// DefaultSTUNServer is the default STUN server used when none are configured.
+	DefaultSTUNServer = "stun:stun.l.google.com:19302"
 )
 
 // Config holds configuration for the connection manager.
 type Config struct {
-	AgentID        string
-	Signaling      signaling.SignalingClient
-	PeerManager    *peer.Manager
-	MsgHandler     func(ctx context.Context, env *envelope.Envelope)
-	X25519PubKey   string
-	OnSession      func(peerID, x25519 string) error
-	ConnectionGate func(peerID string) bool // returns true to allow connection
-	Logger         *slog.Logger
+	AgentID          string
+	Signaling        signaling.SignalingClient
+	PeerManager      *peer.Manager
+	MsgHandler       func(ctx context.Context, env *envelope.Envelope)
+	X25519PubKey     string
+	OnSession        func(peerID, x25519 string) error
+	ConnectionGate   func(peerID string) bool // returns true to allow connection
+	DefaultSTUNURL   string                   // STUN server URL used when no ICE servers are configured
+	Logger           *slog.Logger
 }
 
 // pendingConn tracks an in-progress WebRTC connection negotiation.
@@ -58,6 +62,7 @@ type Manager struct {
 	x25519PubKey   string
 	onSession      func(peerID, x25519 string) error
 	connectionGate func(peerID string) bool
+	defaultSTUNURL string
 	logger         *slog.Logger
 
 	pending map[string]*pendingConn // peerID -> pending connection
@@ -73,6 +78,10 @@ func New(cfg Config) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	stunURL := cfg.DefaultSTUNURL
+	if stunURL == "" {
+		stunURL = DefaultSTUNServer
+	}
 	return &Manager{
 		agentID:        cfg.AgentID,
 		signaling:      cfg.Signaling,
@@ -81,6 +90,7 @@ func New(cfg Config) *Manager {
 		x25519PubKey:   cfg.X25519PubKey,
 		onSession:      cfg.OnSession,
 		connectionGate: cfg.ConnectionGate,
+		defaultSTUNURL: stunURL,
 		logger:         logger,
 		pending:        make(map[string]*pendingConn),
 	}
@@ -412,17 +422,22 @@ func (m *Manager) handleICECandidate(msg pcsignaling.SignalMessage) {
 // setupStateHandler configures the ICE connection state change handler for a
 // pending connection. When the connection succeeds, it registers the peer and
 // starts the receive loop. When it fails, it cleans up.
+// Uses Pion's OnICEConnectionStateChange callback instead of polling.
 func (m *Manager) setupStateHandler(peerID string, wrtc *transport.WebRTCTransport, pc *pendingConn) {
-	// We need a new WebRTCTransport with the state handler. Since
-	// OnStateChange is set at creation time via WebRTCConfig, we'll use
-	// the OnICEConnectionStateChange directly through the data channel
-	// open event instead. The WebRTCTransport.setupDataChannel already
-	// logs open/close events. We monitor the state via a goroutine.
+	stateCh := make(chan webrtc.ICEConnectionState, 8)
+
+	// Register callback that sends state changes through a channel.
+	wrtc.OnStateChange(func(state webrtc.ICEConnectionState) {
+		select {
+		case stateCh <- state:
+		default:
+			// Channel full; drop stale intermediate states.
+		}
+	})
+
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		ticker := time.NewTicker(200 * time.Millisecond)
-		defer ticker.Stop()
 
 		for {
 			select {
@@ -430,8 +445,7 @@ func (m *Manager) setupStateHandler(peerID string, wrtc *transport.WebRTCTranspo
 				return
 			case <-pc.ready:
 				return
-			case <-ticker.C:
-				state := wrtc.ConnectionState()
+			case state := <-stateCh:
 				switch state {
 				case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
 					// Connection established — register peer and start receive loop.
@@ -554,7 +568,7 @@ func (m *Manager) buildICEServers() []webrtc.ICEServer {
 	// Add default STUN server if none configured.
 	if len(servers) == 0 {
 		servers = []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{m.defaultSTUNURL}},
 		}
 	}
 	return servers

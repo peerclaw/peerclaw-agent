@@ -11,6 +11,9 @@ import (
 	"crypto/sha256"
 )
 
+// HKDFSaltSize is the size of the random salt used for HKDF key derivation.
+const HKDFSaltSize = 32
+
 // SessionKey holds the derived symmetric key for encrypting messages between two peers.
 type SessionKey struct {
 	key     []byte // 32-byte symmetric key
@@ -19,24 +22,52 @@ type SessionKey struct {
 
 // DeriveSessionKey computes a shared secret via X25519 ECDH and derives a
 // 32-byte symmetric key using HKDF-SHA256.
-// The info parameter provides context binding (e.g., "peerclaw-session-v1").
-func DeriveSessionKey(privateKey *ecdh.PrivateKey, peerPublicKey *ecdh.PublicKey, peerID string) (*SessionKey, error) {
+// An optional salt can be provided; if nil, a random 32-byte salt is generated.
+// The salt is returned alongside the session key so it can be exchanged with the peer.
+func DeriveSessionKey(privateKey *ecdh.PrivateKey, peerPublicKey *ecdh.PublicKey, peerID string, salt ...[]byte) (*SessionKey, []byte, error) {
 	shared, err := privateKey.ECDH(peerPublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("ECDH key agreement: %w", err)
+		return nil, nil, fmt.Errorf("ECDH key agreement: %w", err)
 	}
 
-	// Derive a 32-byte key using HKDF-SHA256.
-	// Salt is nil (not pre-shared); info provides domain separation.
+	// Use provided salt or generate a random one.
+	var hkdfSalt []byte
+	if len(salt) > 0 && salt[0] != nil {
+		hkdfSalt = salt[0]
+	} else {
+		hkdfSalt = make([]byte, HKDFSaltSize)
+		if _, err := rand.Read(hkdfSalt); err != nil {
+			return nil, nil, fmt.Errorf("generate HKDF salt: %w", err)
+		}
+	}
+
+	// Derive a 32-byte key using HKDF-SHA256 with salt and info for domain separation.
 	info := []byte("peerclaw-session-v1")
-	hkdfReader := hkdf.New(sha256.New, shared, nil, info)
+	hkdfReader := hkdf.New(sha256.New, shared, hkdfSalt, info)
 
 	key := make([]byte, chacha20poly1305.KeySize)
 	if _, err := io.ReadFull(hkdfReader, key); err != nil {
-		return nil, fmt.Errorf("HKDF derive: %w", err)
+		return nil, nil, fmt.Errorf("HKDF derive: %w", err)
 	}
 
-	return &SessionKey{key: key, peerID: peerID}, nil
+	return &SessionKey{key: key, peerID: peerID}, hkdfSalt, nil
+}
+
+// DeriveSessionSalt produces a deterministic 32-byte salt from two public keys.
+// Keys are sorted so both sides compute the same salt regardless of call order.
+func DeriveSessionSalt(pubA, pubB []byte) []byte {
+	// Sort keys for consistency.
+	var first, second []byte
+	if string(pubA) < string(pubB) {
+		first, second = pubA, pubB
+	} else {
+		first, second = pubB, pubA
+	}
+	h := sha256.New()
+	h.Write([]byte("peerclaw-session-salt-v1"))
+	h.Write(first)
+	h.Write(second)
+	return h.Sum(nil)
 }
 
 // NewSessionKeyFromBytes creates a SessionKey from raw key bytes.

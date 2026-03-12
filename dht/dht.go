@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,6 +88,26 @@ func (d *DHT) verifyMessage(msg *RPCMessage) error {
 	}
 	payload := msg.SigningPayload()
 	return coreidentity.Verify(pubKey, payload, msg.Signature)
+}
+
+// validateStoreKey checks whether the sender is allowed to store data under
+// the given key. For identity-type stores (keys that start with or match the
+// sender's public key), we require the key to be derived from the sender's
+// public key. Non-identity keys (e.g., arbitrary application data) are allowed
+// from any sender.
+func (d *DHT) validateStoreKey(key, senderPubKey string) error {
+	// Identity-type key: the key is the sender's public key or is prefixed
+	// by it (e.g., "pubkey/subresource"). Only the owner may store under it.
+	if strings.HasPrefix(key, senderPubKey) || senderPubKey == key {
+		return nil
+	}
+	// If the key looks like another agent's public key (64-char hex string,
+	// the standard Ed25519 public key representation), reject it.
+	if len(key) == len(senderPubKey) && len(key) >= 64 && key != senderPubKey {
+		return fmt.Errorf("store key %q does not match sender public key", key)
+	}
+	// Non-identity keys are allowed from any sender.
+	return nil
 }
 
 // Self returns the local node's info.
@@ -327,7 +348,11 @@ func (d *DHT) handleRPC(ctx context.Context, msg RPCMessage) {
 
 	case RPCStore:
 		if msg.Key != "" && msg.Value != nil {
-			if err := d.store.Put(msg.Key, msg.Value, DefaultTTL, msg.Sender.PublicKey); err != nil {
+			// Validate key ownership: if the key looks like a public key
+			// (identity-type store), ensure it matches the sender's public key.
+			if err := d.validateStoreKey(msg.Key, msg.Sender.PublicKey); err != nil {
+				resp.Error = err.Error()
+			} else if err := d.store.Put(msg.Key, msg.Value, DefaultTTL, msg.Sender.PublicKey); err != nil {
 				resp.Error = err.Error()
 			}
 		}

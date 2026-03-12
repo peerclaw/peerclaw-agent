@@ -668,7 +668,11 @@ func (a *Agent) EstablishSession(peerID, peerX25519PubKeyStr string) error {
 		return fmt.Errorf("get X25519 private key: %w", err)
 	}
 
-	sk, err := security.DeriveSessionKey(privKey, peerX25519Pub, peerID)
+	// Derive a deterministic salt from both X25519 public keys (sorted) so
+	// both sides compute the same salt without an extra round-trip.
+	salt := security.DeriveSessionSalt(privKey.PublicKey().Bytes(), peerX25519Pub.Bytes())
+
+	sk, _, err := security.DeriveSessionKey(privKey, peerX25519Pub, peerID, salt)
 	if err != nil {
 		return fmt.Errorf("derive session key: %w", err)
 	}

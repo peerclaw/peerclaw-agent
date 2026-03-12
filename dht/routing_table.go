@@ -2,6 +2,7 @@ package dht
 
 import (
 	"context"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -13,6 +14,10 @@ const (
 
 	// BucketCount is the number of k-buckets (one per bit of NodeID).
 	BucketCount = IDBits
+
+	// MaxNodesPerSubnet is the maximum number of nodes from the same /24 subnet
+	// allowed in a single bucket. This limits eclipse attack surface.
+	MaxNodesPerSubnet = 2
 )
 
 // bucket holds up to K nodes sorted by last-seen time (most recently seen last).
@@ -55,10 +60,47 @@ func (rt *RoutingTable) SetPoWRequired(required bool, difficulty int) {
 	rt.powDifficulty = difficulty
 }
 
+// subnetOf extracts the /24 subnet prefix from a node's address.
+// Returns empty string if the address has no parseable IP.
+func subnetOf(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	// Normalize to 4-byte form for IPv4.
+	if v4 := ip.To4(); v4 != nil {
+		return v4[:3].String()
+	}
+	// For IPv6, use the first 6 bytes (/48 prefix) as a rough subnet.
+	return ip[:6].String()
+}
+
+// subnetCountInBucket counts how many nodes in the bucket share the given subnet.
+func subnetCountInBucket(b *bucket, subnet string) int {
+	if subnet == "" {
+		return 0
+	}
+	count := 0
+	for _, n := range b.nodes {
+		if subnetOf(n.Address) == subnet {
+			count++
+		}
+	}
+	return count
+}
+
 // AddNode inserts or updates a node in the routing table.
 // If PoW is required, the node must present a valid proof-of-work.
 // If the appropriate bucket is full, the least-recently-seen node is pinged;
 // if it does not respond, it is evicted and the new node is inserted.
+// A per-/24 subnet limit (MaxNodesPerSubnet) is enforced to prevent eclipse attacks.
 func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 	if node.ID == rt.self {
 		return false
@@ -90,6 +132,13 @@ func (rt *RoutingTable) AddNode(node NodeInfo) bool {
 			rt.mu.Unlock()
 			return true
 		}
+	}
+
+	// Enforce per-subnet diversity limit for new nodes.
+	subnet := subnetOf(node.Address)
+	if subnet != "" && subnetCountInBucket(b, subnet) >= MaxNodesPerSubnet {
+		rt.mu.Unlock()
+		return false
 	}
 
 	// Bucket not full: add node.

@@ -87,11 +87,17 @@ type RelayPool interface {
 	Subscribe(ctx context.Context, relayURL string, filter nostr.Filter) (<-chan nostr.Event, func(), error)
 }
 
+const (
+	// maxRelayPoolSize is the maximum number of relay connections cached.
+	maxRelayPoolSize = 50
+)
+
 // liveRelayPool is the production implementation using real Nostr relays.
 type liveRelayPool struct {
-	mu     sync.Mutex
-	relays map[string]*nostr.Relay
-	logger *slog.Logger
+	mu         sync.Mutex
+	relays     map[string]*nostr.Relay
+	order      []string // insertion order for LRU eviction
+	logger     *slog.Logger
 }
 
 func newLiveRelayPool(logger *slog.Logger) *liveRelayPool {
@@ -106,6 +112,14 @@ func (p *liveRelayPool) getRelay(ctx context.Context, url string) (*nostr.Relay,
 	defer p.mu.Unlock()
 
 	if r, ok := p.relays[url]; ok && r.IsConnected() {
+		// Move to end of order (most recently used).
+		for i, u := range p.order {
+			if u == url {
+				p.order = append(p.order[:i], p.order[i+1:]...)
+				p.order = append(p.order, url)
+				break
+			}
+		}
 		return r, nil
 	}
 
@@ -116,7 +130,19 @@ func (p *liveRelayPool) getRelay(ctx context.Context, url string) (*nostr.Relay,
 	if err != nil {
 		return nil, err
 	}
+
+	// Evict oldest relay if pool is at capacity.
+	if len(p.relays) >= maxRelayPoolSize && len(p.order) > 0 {
+		oldest := p.order[0]
+		p.order = p.order[1:]
+		if oldRelay, ok := p.relays[oldest]; ok {
+			oldRelay.Close()
+			delete(p.relays, oldest)
+		}
+	}
+
 	p.relays[url] = r
+	p.order = append(p.order, url)
 	return r, nil
 }
 
@@ -636,7 +662,7 @@ func (m *Mailbox) processOutbox(ctx context.Context) {
 	now := time.Now()
 
 	var remaining []OutboxEntry
-	var toRetry []int
+	var toRetry []OutboxEntry
 
 	for _, entry := range m.outbox {
 		// Remove confirmed entries.
@@ -655,41 +681,36 @@ func (m *Mailbox) processOutbox(ctx context.Context) {
 		}
 
 		remaining = append(remaining, entry)
-		// Check if it's time to retry.
+		// Check if it's time to retry — copy the entry for processing outside the lock.
 		if now.After(entry.NextRetryAt) {
-			toRetry = append(toRetry, len(remaining)-1)
+			toRetry = append(toRetry, entry)
 		}
 	}
 
 	m.outbox = remaining
 	m.mu.Unlock()
 
-	// Retry outside of lock.
-	for _, idx := range toRetry {
-		m.mu.Lock()
-		if idx >= len(m.outbox) {
-			m.mu.Unlock()
-			continue
-		}
-		entry := m.outbox[idx]
-		m.mu.Unlock()
-
+	// Retry outside of lock, then update by envelope ID.
+	for _, entry := range toRetry {
 		if err := m.retrySend(ctx, &entry); err != nil {
 			m.logger.Debug("outbox retry failed", "envelope_id", entry.Envelope.ID, "error", err)
 		}
 
 		m.mu.Lock()
-		if idx < len(m.outbox) {
-			m.outbox[idx].Retries++
-			delay := outboxRetryBase
-			for i := 0; i < m.outbox[idx].Retries; i++ {
-				delay *= 2
-				if delay > outboxRetryMax {
-					delay = outboxRetryMax
-					break
+		for i := range m.outbox {
+			if m.outbox[i].Envelope.ID == entry.Envelope.ID {
+				m.outbox[i].Retries++
+				delay := outboxRetryBase
+				for j := 0; j < m.outbox[i].Retries; j++ {
+					delay *= 2
+					if delay > outboxRetryMax {
+						delay = outboxRetryMax
+						break
+					}
 				}
+				m.outbox[i].NextRetryAt = time.Now().Add(delay)
+				break
 			}
-			m.outbox[idx].NextRetryAt = time.Now().Add(delay)
 		}
 		m.mu.Unlock()
 	}

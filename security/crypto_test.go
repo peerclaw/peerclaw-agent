@@ -18,12 +18,16 @@ func TestSessionKey_RoundTrip(t *testing.T) {
 	priv2, _ := kp2.X25519PrivateKey()
 	pub1, _ := kp1.X25519PublicKey()
 
-	sk1, err := DeriveSessionKey(priv1, pub2, "peer2")
+	sk1, salt, err := DeriveSessionKey(priv1, pub2, "peer2")
 	if err != nil {
 		t.Fatalf("DeriveSessionKey(1->2): %v", err)
 	}
+	if len(salt) != HKDFSaltSize {
+		t.Fatalf("salt length = %d, want %d", len(salt), HKDFSaltSize)
+	}
 
-	sk2, err := DeriveSessionKey(priv2, pub1, "peer1")
+	// Peer 2 uses the same salt to derive the same key.
+	sk2, _, err := DeriveSessionKey(priv2, pub1, "peer1", salt)
 	if err != nil {
 		t.Fatalf("DeriveSessionKey(2->1): %v", err)
 	}
@@ -60,8 +64,8 @@ func TestSessionKey_RoundTripReverse(t *testing.T) {
 	priv2, _ := kp2.X25519PrivateKey()
 	pub1, _ := kp1.X25519PublicKey()
 
-	sk1, _ := DeriveSessionKey(priv1, pub2, "peer2")
-	sk2, _ := DeriveSessionKey(priv2, pub1, "peer1")
+	sk1, salt, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk2, _, _ := DeriveSessionKey(priv2, pub1, "peer1", salt)
 
 	plaintext := []byte("reverse direction test")
 
@@ -90,13 +94,13 @@ func TestSessionKey_DifferentKeys(t *testing.T) {
 	pub2, _ := kp2.X25519PublicKey()
 	priv3, _ := kp3.X25519PrivateKey()
 
-	sk12, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk12, salt, _ := DeriveSessionKey(priv1, pub2, "peer2")
 
 	plaintext := []byte("secret message")
 	ciphertext, _ := sk12.Encrypt(plaintext)
 
 	// Try to decrypt with wrong session key (kp3 <-> kp2 instead of kp1 <-> kp2)
-	sk32, _ := DeriveSessionKey(priv3, pub2, "peer2")
+	sk32, _, _ := DeriveSessionKey(priv3, pub2, "peer2", salt)
 	_, err := sk32.Decrypt(ciphertext)
 	if err == nil {
 		t.Error("decryption with wrong key should fail")
@@ -112,8 +116,8 @@ func TestSessionKey_LargePayload(t *testing.T) {
 	priv2, _ := kp2.X25519PrivateKey()
 	pub1, _ := kp1.X25519PublicKey()
 
-	sk1, _ := DeriveSessionKey(priv1, pub2, "peer2")
-	sk2, _ := DeriveSessionKey(priv2, pub1, "peer1")
+	sk1, salt, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk2, _, _ := DeriveSessionKey(priv2, pub1, "peer1", salt)
 
 	// 1 MB payload
 	plaintext := make([]byte, 1<<20)
@@ -145,8 +149,8 @@ func TestSessionKey_EmptyPayload(t *testing.T) {
 	priv2, _ := kp2.X25519PrivateKey()
 	pub1, _ := kp1.X25519PublicKey()
 
-	sk1, _ := DeriveSessionKey(priv1, pub2, "peer2")
-	sk2, _ := DeriveSessionKey(priv2, pub1, "peer1")
+	sk1, salt, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk2, _, _ := DeriveSessionKey(priv2, pub1, "peer1", salt)
 
 	ciphertext, err := sk1.Encrypt([]byte{})
 	if err != nil {
@@ -170,7 +174,7 @@ func TestSessionKey_TruncatedCiphertext(t *testing.T) {
 	priv1, _ := kp1.X25519PrivateKey()
 	pub2, _ := kp2.X25519PublicKey()
 
-	sk, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk, _, _ := DeriveSessionKey(priv1, pub2, "peer2")
 
 	// Too short to contain nonce + tag
 	_, err := sk.Decrypt([]byte("short"))
@@ -188,8 +192,8 @@ func TestSessionKey_TamperedCiphertext(t *testing.T) {
 	priv2, _ := kp2.X25519PrivateKey()
 	pub1, _ := kp1.X25519PublicKey()
 
-	sk1, _ := DeriveSessionKey(priv1, pub2, "peer2")
-	sk2, _ := DeriveSessionKey(priv2, pub1, "peer1")
+	sk1, salt, _ := DeriveSessionKey(priv1, pub2, "peer2")
+	sk2, _, _ := DeriveSessionKey(priv2, pub1, "peer1", salt)
 
 	ciphertext, _ := sk1.Encrypt([]byte("secret"))
 

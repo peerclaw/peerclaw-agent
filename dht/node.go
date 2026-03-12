@@ -1,26 +1,30 @@
 package dht
 
 import (
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"time"
 )
 
 const (
-	// IDLength is the length of a NodeID in bytes (160-bit SHA-1).
+	// IDLength is the length of a NodeID in bytes (truncated SHA-256).
 	IDLength = 20
 
 	// IDBits is the length of a NodeID in bits.
 	IDBits = IDLength * 8
 )
 
-// NodeID is a 160-bit identifier for a DHT node, derived from SHA-1 of the public key.
+// NodeID is a 160-bit identifier for a DHT node, derived from SHA-256 (truncated to 20 bytes) of the public key.
 type NodeID [IDLength]byte
 
 // NodeIDFromPublicKey derives a NodeID from an agent's public key string.
+// Uses SHA-256 truncated to 20 bytes for compatibility with the 160-bit ID space.
 func NodeIDFromPublicKey(pubKey string) NodeID {
-	return NodeID(sha1.Sum([]byte(pubKey)))
+	hash := sha256.Sum256([]byte(pubKey))
+	var id NodeID
+	copy(id[:], hash[:IDLength])
+	return id
 }
 
 // NodeIDFromHex parses a hex-encoded NodeID.

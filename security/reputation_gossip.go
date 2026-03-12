@@ -24,26 +24,28 @@ const maxClaimAge = 1 * time.Hour
 // NostrReputationKind is the Nostr event kind for reputation claims (NIP-78 application-specific data).
 const NostrReputationKind = 30078
 
-// SecondHandReputationWeight is the weight applied to reputation claims from other peers.
-const SecondHandReputationWeight = 0.3
+// DefaultSecondHandWeight is the default weight applied to reputation claims from other peers.
+const DefaultSecondHandWeight = 0.3
 
 // MinTrustForGossip is the minimum trust level required to accept gossip from a peer.
 const MinTrustForGossip = TrustVerified
 
 // ReputationGossip manages publishing and consuming reputation claims via Nostr.
 type ReputationGossip struct {
-	store      *ReputationStore
-	trustStore *TrustStore
-	selfPubKey string
-	seenClaims sync.Map // claimID -> struct{} for replay protection
+	store            *ReputationStore
+	trustStore       *TrustStore
+	selfPubKey       string
+	seenClaims       sync.Map // claimID -> struct{} for replay protection
+	SecondHandWeight float64  // Configurable weight for second-hand reputation claims
 }
 
-// NewReputationGossip creates a new gossip manager.
+// NewReputationGossip creates a new gossip manager with the default second-hand weight.
 func NewReputationGossip(store *ReputationStore, trustStore *TrustStore, selfPubKey string) *ReputationGossip {
 	return &ReputationGossip{
-		store:      store,
-		trustStore: trustStore,
-		selfPubKey: selfPubKey,
+		store:            store,
+		trustStore:       trustStore,
+		selfPubKey:       selfPubKey,
+		SecondHandWeight: DefaultSecondHandWeight,
 	}
 }
 
@@ -75,7 +77,7 @@ func UnmarshalClaim(data []byte) (*ReputationClaim, error) {
 
 // ProcessClaim processes an incoming reputation claim from another peer.
 // It only accepts claims from peers with TrustVerified or higher,
-// and applies SecondHandReputationWeight to the score.
+// and applies the configurable SecondHandWeight to the score.
 // Returns false if the claim is rejected (untrusted issuer, self-issued,
 // duplicate, or stale).
 func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
@@ -103,7 +105,7 @@ func (rg *ReputationGossip) ProcessClaim(claim *ReputationClaim) bool {
 	}
 
 	// Apply second-hand weight via EWMA blending.
-	rg.store.ApplyGossipScore(claim.Subject, claim.Score, SecondHandReputationWeight)
+	rg.store.ApplyGossipScore(claim.Subject, claim.Score, rg.SecondHandWeight)
 
 	return true
 }

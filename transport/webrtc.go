@@ -190,6 +190,15 @@ func (t *WebRTCTransport) ConnectionState() webrtc.ICEConnectionState {
 	return t.pc.ICEConnectionState()
 }
 
+// OnStateChange registers a callback for ICE connection state changes.
+// This can be called after creation to receive state change notifications
+// without polling.
+func (t *WebRTCTransport) OnStateChange(handler ConnectionStateHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onStateChange = handler
+}
+
 // SortICECandidates sorts ICE candidates by type priority: host > srflx > relay.
 // This helps establish direct connections when possible while falling back to TURN.
 func SortICECandidates(candidates []webrtc.ICECandidate) []webrtc.ICECandidate {
