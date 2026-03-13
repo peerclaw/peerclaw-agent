@@ -7,8 +7,7 @@ import (
 )
 
 // SignalingClient abstracts the signaling transport used for WebRTC negotiation.
-// Implementations include Client (WebSocket to server), NostrSignaling
-// (decentralized via Nostr relays), and CompositeSignaling (hybrid).
+// The default implementation is Client (WebSocket to PeerClaw server).
 type SignalingClient interface {
 	Connect(ctx context.Context) error
 	Send(ctx context.Context, msg pcsignaling.SignalMessage) error
