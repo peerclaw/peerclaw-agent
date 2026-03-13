@@ -3,6 +3,7 @@ package discovery
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/peerclaw/peerclaw-core/agentcard"
+	"github.com/peerclaw/peerclaw-core/identity"
 )
 
 // RegistryClient provides methods for interacting with the peerclaw-server
@@ -19,6 +21,9 @@ type RegistryClient struct {
 	baseURL    string
 	httpClient *http.Client
 	logger     *slog.Logger
+	privateKey ed25519.PrivateKey
+	publicKey  string // base64-encoded public key
+	agentID    string // agent ID for auth headers
 }
 
 // NewRegistryClient creates a new registry client.
@@ -231,6 +236,191 @@ func (c *RegistryClient) ClaimRegister(ctx context.Context, req ClaimRequest) (*
 	}
 	c.logger.Info("claimed and registered with platform", "id", card.ID, "name", card.Name)
 	return &card, nil
+}
+
+// SetAuth configures Ed25519 signing credentials for authenticated API calls.
+func (c *RegistryClient) SetAuth(privKey ed25519.PrivateKey, pubKey, agentID string) {
+	c.privateKey = privKey
+	c.publicKey = pubKey
+	c.agentID = agentID
+}
+
+// signRequest adds Ed25519 signature headers to an HTTP request.
+func (c *RegistryClient) signRequest(req *http.Request, body []byte) {
+	if c.privateKey == nil {
+		return
+	}
+	sig := identity.Sign(c.privateKey, body)
+	req.Header.Set("X-PeerClaw-Signature", sig)
+	req.Header.Set("X-PeerClaw-PublicKey", c.publicKey)
+	req.Header.Set("X-PeerClaw-Agent-ID", c.agentID)
+}
+
+// ContactEntry represents a contact returned by the server API.
+type ContactEntry struct {
+	ID             string `json:"id"`
+	OwnerAgentID   string `json:"owner_agent_id"`
+	ContactAgentID string `json:"contact_agent_id"`
+	Alias          string `json:"alias"`
+}
+
+// ListContacts returns all contacts for the given agent from the server.
+func (c *RegistryClient) ListContacts(ctx context.Context, agentID string) ([]ContactEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/v1/agents/"+agentID+"/contacts", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.signRequest(req, nil)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list contacts: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readError(resp)
+	}
+
+	var result struct {
+		Contacts []ContactEntry `json:"contacts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode contacts response: %w", err)
+	}
+	return result.Contacts, nil
+}
+
+// AddContact adds a contact to the agent's whitelist on the server.
+func (c *RegistryClient) AddContact(ctx context.Context, agentID, contactAgentID, alias string) error {
+	body, _ := json.Marshal(map[string]string{
+		"contact_agent_id": contactAgentID,
+		"alias":            alias,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/agents/"+agentID+"/contacts", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.signRequest(req, body)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("add contact: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return c.readError(resp)
+	}
+	return nil
+}
+
+// RemoveContact removes a contact from the agent's whitelist on the server.
+func (c *RegistryClient) RemoveContact(ctx context.Context, agentID, contactAgentID string) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", c.baseURL+"/api/v1/agents/"+agentID+"/contacts/"+contactAgentID, nil)
+	if err != nil {
+		return err
+	}
+	c.signRequest(req, nil)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("remove contact: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return c.readError(resp)
+	}
+	return nil
+}
+
+// ContactRequestEntry represents a contact request returned by the server API.
+type ContactRequestEntry struct {
+	ID           string `json:"id"`
+	FromAgentID  string `json:"from_agent_id"`
+	ToAgentID    string `json:"to_agent_id"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	RejectReason string `json:"reject_reason,omitempty"`
+}
+
+// SendContactRequest sends a contact request from one agent to another.
+func (c *RegistryClient) SendContactRequest(ctx context.Context, agentID, targetAgentID, message string) error {
+	body, _ := json.Marshal(map[string]string{
+		"target_agent_id": targetAgentID,
+		"message":         message,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/agents/"+agentID+"/contact-requests", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.signRequest(req, body)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send contact request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return c.readError(resp)
+	}
+	return nil
+}
+
+// ListIncomingContactRequests returns incoming contact requests for the agent.
+func (c *RegistryClient) ListIncomingContactRequests(ctx context.Context, agentID string) ([]ContactRequestEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/v1/agents/"+agentID+"/contact-requests/incoming", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.signRequest(req, nil)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list incoming contact requests: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readError(resp)
+	}
+
+	var result struct {
+		Requests []ContactRequestEntry `json:"requests"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode contact requests response: %w", err)
+	}
+	return result.Requests, nil
+}
+
+// UpdateContactRequest approves or rejects a contact request.
+func (c *RegistryClient) UpdateContactRequest(ctx context.Context, agentID, requestID, action, reason string) error {
+	body, _ := json.Marshal(map[string]string{
+		"action": action,
+		"reason": reason,
+	})
+	req, err := http.NewRequestWithContext(ctx, "PUT", c.baseURL+"/api/v1/agents/"+agentID+"/contact-requests/"+requestID, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.signRequest(req, body)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("update contact request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return c.readError(resp)
+	}
+	return nil
 }
 
 // Close is a no-op for RegistryClient (satisfies the Discovery interface).

@@ -243,6 +243,8 @@ func (m *Manager) signalingLoop() {
 				m.handleAnswer(msg)
 			case pcsignaling.MessageTypeICECandidate:
 				m.handleICECandidate(msg)
+			case pcsignaling.MessageTypeSignalingError:
+				m.handleSignalingError(msg)
 			}
 		}
 	}
@@ -433,6 +435,39 @@ func (m *Manager) handleICECandidate(msg pcsignaling.SignalMessage) {
 
 	if err := pc.transport.AddICECandidate(candidate); err != nil {
 		m.logger.Warn("failed to add ICE candidate", "peer", peerID, "error", err)
+	}
+}
+
+// handleSignalingError processes a signaling error from the server.
+// It fails any pending connection to the peer that triggered the error.
+func (m *Manager) handleSignalingError(msg pcsignaling.SignalMessage) {
+	var errPayload struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+		m.logger.Warn("failed to parse signaling error payload", "error", err)
+		return
+	}
+
+	m.logger.Warn("signaling error", "error", errPayload.Error, "message", errPayload.Message)
+
+	// Fail all pending connections — the server rejected our signaling attempt.
+	m.mu.Lock()
+	var toCleanup []string
+	for peerID, pc := range m.pending {
+		if pc.role == "offerer" {
+			pc.err = fmt.Errorf("signaling rejected: %s", errPayload.Message)
+			pc.closeOnce.Do(func() { close(pc.ready) })
+			pc.transport.Close()
+			delete(m.pending, peerID)
+			toCleanup = append(toCleanup, peerID)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, peerID := range toCleanup {
+		m.logger.Info("pending connection failed due to signaling error", "peer", peerID)
 	}
 }
 

@@ -321,6 +321,29 @@ func (a *Agent) Start(ctx context.Context) error {
 		return regErr
 	}
 
+	// Set up RegistryClient authentication and sync contacts from server.
+	if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
+		regClient.SetAuth(a.keypair.PrivateKey, a.keypair.PublicKeyString(), a.agentID)
+
+		// Sync server contacts → local TrustStore (additive only, non-fatal).
+		contacts, err := regClient.ListContacts(ctx, a.agentID)
+		if err != nil {
+			a.logger.Warn("failed to sync contacts from server", "error", err)
+		} else {
+			synced := 0
+			for _, c := range contacts {
+				if a.trustStore.Check(c.ContactAgentID) == security.TrustUnknown {
+					if err := a.trustStore.SetTrust(c.ContactAgentID, security.TrustVerified); err == nil {
+						synced++
+					}
+				}
+			}
+			if synced > 0 {
+				a.logger.Info("synced contacts from server", "added", synced, "total", len(contacts))
+			}
+		}
+	}
+
 	// Set up signaling connection.
 	a.signaling.SetAgentID(a.agentID)
 	if err := a.signaling.Connect(ctx); err != nil {
@@ -518,8 +541,9 @@ func (a *Agent) Stop(ctx context.Context) error {
 // The payload is encrypted (if a session key exists), then the envelope is signed
 // covering the ciphertext + headers (encrypt-then-sign for pre-authentication).
 func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
-	// Outbound whitelist check.
-	if !a.trustStore.IsAllowed(env.Destination) {
+	// Outbound whitelist check — bypass for contact requests.
+	isContactRequest := env.Metadata != nil && env.Metadata["peerclaw.type"] == "contact_request"
+	if !isContactRequest && !a.trustStore.IsAllowed(env.Destination) {
 		return fmt.Errorf("destination %s is not whitelisted", env.Destination)
 	}
 
@@ -803,8 +827,9 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 		return
 	}
 
-	// Inbound whitelist check.
-	if env.Source != "" {
+	// Inbound whitelist check — bypass for contact requests.
+	isIncomingContactReq := env.Metadata != nil && env.Metadata["peerclaw.type"] == "contact_request"
+	if env.Source != "" && !isIncomingContactReq {
 		if !a.trustStore.IsAllowedWithReputation(env.Source) {
 			a.logger.Warn("message from non-whitelisted peer dropped", "source", env.Source)
 			return
@@ -828,6 +853,27 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 			}
 			return
 		}
+	}
+
+	// Handle incoming P2P contact requests.
+	if isIncomingContactReq && env.Source != "" {
+		a.logger.Info("received P2P contact request", "from", env.Source)
+		a.mu.RLock()
+		handler := a.connRequestHandler
+		a.mu.RUnlock()
+		if handler != nil {
+			approved := handler(ctx, &ConnectionRequest{
+				FromAgentID: env.Source,
+				Timestamp:   time.Now(),
+			})
+			if approved {
+				_ = a.AddContact(env.Source)
+				a.logger.Info("P2P contact request approved", "from", env.Source)
+			} else {
+				a.logger.Info("P2P contact request denied", "from", env.Source)
+			}
+		}
+		return
 	}
 
 	// Handle A2A task state events.
@@ -879,8 +925,20 @@ func (a *Agent) OnConnectionRequest(handler ConnectionRequestHandler) {
 }
 
 // AddContact adds an agent to the whitelist with TrustVerified level.
+// Changes are pushed to the server asynchronously (best-effort).
 func (a *Agent) AddContact(agentID string) error {
-	return a.trustStore.SetTrust(agentID, security.TrustVerified)
+	if err := a.trustStore.SetTrust(agentID, security.TrustVerified); err != nil {
+		return err
+	}
+	// Async push to server.
+	go func() {
+		if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
+			if err := regClient.AddContact(context.Background(), a.agentID, agentID, ""); err != nil {
+				a.logger.Debug("failed to push contact to server", "contact", agentID, "error", err)
+			}
+		}
+	}()
+	return nil
 }
 
 // ImportContacts bulk-imports agent IDs as verified contacts.
@@ -894,8 +952,44 @@ func (a *Agent) ImportContacts(agentIDs []string) error {
 }
 
 // RemoveContact removes an agent from the whitelist.
+// Changes are pushed to the server asynchronously (best-effort).
 func (a *Agent) RemoveContact(agentID string) {
 	a.trustStore.RemoveEntry(agentID)
+	// Async push to server.
+	go func() {
+		if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
+			if err := regClient.RemoveContact(context.Background(), a.agentID, agentID); err != nil {
+				a.logger.Debug("failed to push contact removal to server", "contact", agentID, "error", err)
+			}
+		}
+	}()
+}
+
+// SendContactRequest sends a contact request to another agent.
+// Primary path: Server REST API. Fallback: P2P envelope with metadata.
+func (a *Agent) SendContactRequest(ctx context.Context, targetAgentID, message string) error {
+	// Primary path: Server REST API.
+	if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
+		if err := regClient.SendContactRequest(ctx, a.agentID, targetAgentID, message); err == nil {
+			a.logger.Info("contact request sent via server", "target", targetAgentID)
+			return nil
+		} else {
+			a.logger.Debug("server contact request failed, trying P2P", "error", err)
+		}
+	}
+
+	// Fallback: P2P envelope with contact_request metadata.
+	payload, _ := json.Marshal(map[string]string{
+		"type":    "contact_request",
+		"message": message,
+	})
+	env := envelope.New(a.agentID, targetAgentID, "peerclaw", payload)
+	env.WithMetadata("peerclaw.type", "contact_request")
+	if err := a.Send(ctx, env); err != nil {
+		return fmt.Errorf("send contact request: %w", err)
+	}
+	a.logger.Info("contact request sent via P2P", "target", targetAgentID)
+	return nil
 }
 
 // BlockAgent explicitly blocks an agent.

@@ -88,6 +88,25 @@ func (c *Client) readLoop(ctx context.Context) {
 			continue
 		}
 
+		// Handle signaling errors from server.
+		if msg.Type == pcsignaling.MessageTypeSignalingError {
+			var errPayload struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(msg.Payload, &errPayload); err == nil {
+				c.logger.Warn("signaling error from server", "error", errPayload.Error, "message", errPayload.Message)
+			} else {
+				c.logger.Warn("signaling error from server", "payload", string(msg.Payload))
+			}
+			// Forward to inbox so connection manager can handle it.
+			select {
+			case c.inbox <- msg:
+			default:
+			}
+			continue
+		}
+
 		// Handle bridge messages via registered handler.
 		if msg.Type == pcsignaling.MessageTypeBridgeMessage {
 			c.mu.Lock()
