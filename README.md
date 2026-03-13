@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-P2P Agent SDK for the [PeerClaw](https://github.com/peerclaw/peerclaw) identity & trust platform and Agent Marketplace. Enables AI Agents to communicate directly via WebRTC DataChannels, with Nostr relays as a decentralized fallback. Ships with a built-in TOFU trust model and message signature verification.
+P2P Agent SDK for the [PeerClaw](https://github.com/peerclaw/peerclaw) identity & trust platform. Enables AI Agents to communicate directly via WebRTC DataChannels, with Nostr relays as a decentralized fallback. Ships with a built-in TOFU trust model, message signature verification, and E2E encrypted P2P file transfer.
 
 ## Key Features
 
@@ -17,6 +17,7 @@ P2P Agent SDK for the [PeerClaw](https://github.com/peerclaw/peerclaw) identity 
 - **Message Validation Pipeline** — Integrated signature verification, timestamp freshness (±2min), nonce-based replay protection, and payload size limits on every incoming message
 - **P2P Whitelist (Default-Deny)** — TrustStore-based contact management: AddContact / RemoveContact / BlockAgent with connection gating that rejects unauthorized offers before allocating WebRTC resources
 - **Connection Quality Monitoring** — RTT, packet loss, and throughput metrics with automatic degradation notifications
+- **P2P File Transfer** — E2E encrypted large file transfer over dedicated WebRTC DataChannels with pipeline push, backpressure, challenge-response mutual auth, resume support, and Nostr relay fallback
 - **Auto-Discovery** — Register and discover other Agents through peerclaw-server
 
 ## Architecture
@@ -127,6 +128,10 @@ for _, r := range results {
 | `agent.RemoveContact(agentID)` | Remove a peer from the whitelist |
 | `agent.BlockAgent(agentID)` | Block a peer — all messages and connections are rejected |
 | `agent.ListContacts()` | List all trust entries |
+| `agent.SendFile(ctx, peerID, path)` | Send a file to a peer via E2E encrypted P2P transfer |
+| `agent.ListTransfers()` | List active and recent file transfers |
+| `agent.GetTransfer(fileID)` | Get status of a specific file transfer |
+| `agent.CancelTransfer(fileID)` | Cancel an in-progress file transfer |
 | `agent.OnConnectionRequest(handler)` | Register a callback for connection requests from unknown peers |
 
 ### Options
@@ -140,6 +145,8 @@ for _, r := range results {
 | `KeypairPath` | Path to the keypair file (if empty, a new keypair is generated each run) |
 | `TrustStorePath` | Path to the trust store file |
 | `NostrRelays` | List of Nostr relay URLs (e.g., `"wss://relay.damus.io"`) |
+| `FileTransferDir` | Directory for received files (defaults to current directory) |
+| `ResumeStatePath` | Path to persist file transfer resume state |
 | `Logger` | Structured logger |
 
 ## Security Model

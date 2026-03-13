@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-[PeerClaw](https://github.com/peerclaw/peerclaw) 身份与信任平台及 Agent Marketplace 的 P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型与消息签名验证。
+[PeerClaw](https://github.com/peerclaw/peerclaw) 身份与信任平台的 P2P Agent SDK。让 AI Agent 通过 WebRTC DataChannel 直连通信，以 Nostr relay 作为去中心化兜底，内置 TOFU 信任模型、消息签名验证和端到端加密的 P2P 文件传输。
 
 ## 核心特性
 
@@ -17,6 +17,7 @@
 - **消息验证管线** — 集成签名验证、时间戳新鲜度（±2 分钟）、基于 nonce 的重放防护、载荷大小限制
 - **P2P 白名单（默认拒绝）** — 基于 TrustStore 的联系人管理：AddContact / RemoveContact / BlockAgent，连接门控在分配 WebRTC 资源之前拒绝未授权 offer
 - **连接质量监控** — RTT、丢包率、吞吐统计，连接降级自动通知
+- **P2P 文件传输** — 通过专用 WebRTC DataChannel 端到端加密大文件传输，流水线推送、背压控制、Challenge-Response 双向鉴权、断点续传、Nostr relay 兜底
 - **自动发现** — 通过 peerclaw-server 注册和发现其他 Agent
 
 ## 架构
@@ -127,6 +128,10 @@ for _, r := range results {
 | `agent.RemoveContact(agentID)` | 从白名单移除 peer |
 | `agent.BlockAgent(agentID)` | 拉黑 peer — 所有消息和连接被拒绝 |
 | `agent.ListContacts()` | 列出所有信任条目 |
+| `agent.SendFile(ctx, peerID, path)` | 向 peer 发送文件，端到端加密 P2P 传输 |
+| `agent.ListTransfers()` | 列出活跃和最近的文件传输 |
+| `agent.GetTransfer(fileID)` | 获取特定文件传输状态 |
+| `agent.CancelTransfer(fileID)` | 取消进行中的文件传输 |
 | `agent.OnConnectionRequest(handler)` | 注册未知 peer 连接请求的回调 |
 
 ### Options 配置
@@ -140,6 +145,8 @@ for _, r := range results {
 | `KeypairPath` | 密钥文件路径（为空则每次生成新密钥） |
 | `TrustStorePath` | 信任存储文件路径 |
 | `NostrRelays` | Nostr relay URL 列表（如 `"wss://relay.damus.io"`） |
+| `FileTransferDir` | 接收文件存放目录（默认当前目录） |
+| `ResumeStatePath` | 文件传输断点续传状态持久化路径 |
 | `Logger` | 结构化日志器 |
 
 ## 安全模型
