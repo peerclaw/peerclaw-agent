@@ -7,8 +7,8 @@ import (
 )
 
 // Discovery abstracts agent registration and discovery.
-// Implementations include RegistryClient (centralized server),
-// DHTDiscovery (decentralized), and CompositeDiscovery (hybrid).
+// Implementations include RegistryClient (centralized server)
+// and CompositeDiscovery (hybrid).
 type Discovery interface {
 	Register(ctx context.Context, req RegisterRequest) (*agentcard.Card, error)
 	Deregister(ctx context.Context, agentID string) error
