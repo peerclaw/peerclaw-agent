@@ -86,6 +86,13 @@ func (sk *SessionKey) PeerID() string {
 	return sk.peerID
 }
 
+// KeyBytes returns a copy of the raw symmetric key bytes.
+func (sk *SessionKey) KeyBytes() []byte {
+	keyCopy := make([]byte, len(sk.key))
+	copy(keyCopy, sk.key)
+	return keyCopy
+}
+
 // Encrypt encrypts plaintext using XChaCha20-Poly1305 with a random nonce.
 // The nonce is prepended to the ciphertext.
 // Returns: nonce (24 bytes) || ciphertext || tag (16 bytes).

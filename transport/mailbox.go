@@ -211,6 +211,8 @@ type Mailbox struct {
 	onMessage MailboxMessageHandler
 	onReceipt MailboxReceiptHandler
 
+	wakeupCh chan struct{} // signal immediate inbox sync
+
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -247,6 +249,7 @@ func NewMailbox(cfg MailboxConfig) (*Mailbox, error) {
 		cfg:       cfg,
 		nostrKeys: nostrKeys,
 		pool:      newLiveRelayPool(logger),
+		wakeupCh:  make(chan struct{}, 1),
 		logger:    logger,
 	}
 
@@ -284,6 +287,7 @@ func NewMailboxWithPool(cfg MailboxConfig, pool RelayPool) (*Mailbox, error) {
 		cfg:       cfg,
 		nostrKeys: nostrKeys,
 		pool:      pool,
+		wakeupCh:  make(chan struct{}, 1),
 		logger:    logger,
 	}
 
@@ -514,12 +518,27 @@ func (m *Mailbox) handleMailboxEvent(event *nostr.Event) {
 
 	switch event.Kind {
 	case MailboxEventKind:
+		// Check if this is a wakeup signal.
+		if m.isWakeupSignal(plaintext) {
+			m.logger.Debug("mailbox wakeup received, triggering immediate sync")
+			m.TriggerSync()
+			return
+		}
 		m.handleInboxMessage(plaintext, event)
 	case ReceiptEventKind:
 		m.handleDeliveryReceipt(plaintext)
 	default:
 		m.logger.Debug("unknown mailbox event kind", "kind", event.Kind)
 	}
+}
+
+// isWakeupSignal checks if the plaintext is a mailbox wakeup envelope.
+func (m *Mailbox) isWakeupSignal(plaintext string) bool {
+	var env envelope.Envelope
+	if err := json.Unmarshal([]byte(plaintext), &env); err != nil {
+		return false
+	}
+	return env.Metadata != nil && env.Metadata["wakeup"] == "true"
 }
 
 func (m *Mailbox) handleInboxMessage(plaintext string, event *nostr.Event) {
@@ -623,6 +642,15 @@ func (m *Mailbox) confirmDelivery(envelopeID string) {
 	}
 }
 
+// TriggerSync signals an immediate inbox sync (e.g., on mailbox wakeup).
+// Non-blocking: if a sync is already pending, the signal is coalesced.
+func (m *Mailbox) TriggerSync() {
+	select {
+	case m.wakeupCh <- struct{}{}:
+	default:
+	}
+}
+
 // inboxSyncLoop periodically syncs the inbox.
 func (m *Mailbox) inboxSyncLoop(ctx context.Context) {
 	defer m.wg.Done()
@@ -635,6 +663,8 @@ func (m *Mailbox) inboxSyncLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			m.SyncInbox(ctx)
+		case <-m.wakeupCh:
 			m.SyncInbox(ctx)
 		}
 	}

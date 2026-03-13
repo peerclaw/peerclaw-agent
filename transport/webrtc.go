@@ -24,6 +24,9 @@ const (
 // ConnectionStateHandler is called when the ICE connection state changes.
 type ConnectionStateHandler func(state webrtc.ICEConnectionState)
 
+// DataChannelHandler is called when a new DataChannel matching a registered prefix is opened.
+type DataChannelHandler func(*webrtc.DataChannel)
+
 // WebRTCTransport implements Transport over a WebRTC DataChannel.
 type WebRTCTransport struct {
 	pc              *webrtc.PeerConnection
@@ -32,6 +35,8 @@ type WebRTCTransport struct {
 	logger          *slog.Logger
 	monitor         *ConnectionMonitor
 	onStateChange   ConnectionStateHandler
+	dcHandlers      map[string]DataChannelHandler
+	sendReady       chan struct{}
 	mu              sync.Mutex
 	closed          bool
 }
@@ -65,6 +70,8 @@ func NewWebRTCTransport(cfg WebRTCConfig) (*WebRTCTransport, error) {
 		logger:        logger,
 		monitor:       NewConnectionMonitor(),
 		onStateChange: cfg.OnStateChange,
+		dcHandlers:    make(map[string]DataChannelHandler),
+		sendReady:     make(chan struct{}, 1),
 	}
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
@@ -75,6 +82,17 @@ func NewWebRTCTransport(cfg WebRTCConfig) (*WebRTCTransport, error) {
 	})
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		label := dc.Label()
+		t.mu.Lock()
+		for prefix, handler := range t.dcHandlers {
+			if strings.HasPrefix(label, prefix) {
+				t.mu.Unlock()
+				handler(dc)
+				return
+			}
+		}
+		t.mu.Unlock()
+		// Default: treat as control channel.
 		t.setupDataChannel(dc)
 	})
 
@@ -178,10 +196,47 @@ func (t *WebRTCTransport) OnICECandidate(handler func(*webrtc.ICECandidate)) {
 	t.pc.OnICECandidate(handler)
 }
 
+// CreateDataChannel creates a new DataChannel on the underlying PeerConnection.
+// This is used by the file transfer engine to create dedicated data channels.
+func (t *WebRTCTransport) CreateDataChannel(label string, opts *webrtc.DataChannelInit) (*webrtc.DataChannel, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil, fmt.Errorf("transport closed")
+	}
+	return t.pc.CreateDataChannel(label, opts)
+}
+
+// RegisterDataChannelHandler registers a handler for incoming DataChannels
+// whose label starts with the given prefix. For example, registering "ft-"
+// will route any DataChannel with a label like "ft-abc123" to the handler.
+func (t *WebRTCTransport) RegisterDataChannelHandler(prefix string, handler DataChannelHandler) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.dcHandlers[prefix] = handler
+}
+
+const (
+	// backpressureHighWater is the buffered amount threshold above which Send() blocks.
+	backpressureHighWater = 1 << 20 // 1 MB
+
+	// backpressureLowWater is the threshold at which OnBufferedAmountLow fires.
+	backpressureLowWater = 256 * 1024 // 256 KB
+)
+
 func (t *WebRTCTransport) setupDataChannel(dc *webrtc.DataChannel) {
 	t.mu.Lock()
 	t.dc = dc
 	t.mu.Unlock()
+
+	// Set up backpressure signaling.
+	dc.SetBufferedAmountLowThreshold(backpressureLowWater)
+	dc.OnBufferedAmountLow(func() {
+		select {
+		case t.sendReady <- struct{}{}:
+		default:
+		}
+	})
 
 	dc.OnOpen(func() {
 		t.logger.Info("data channel opened", "label", dc.Label())
@@ -218,6 +273,15 @@ func (t *WebRTCTransport) Send(ctx context.Context, env *envelope.Envelope) erro
 
 	if dc == nil {
 		return fmt.Errorf("data channel not established")
+	}
+
+	// Backpressure: wait if buffered amount exceeds high-water mark.
+	if dc.BufferedAmount() > backpressureHighWater {
+		select {
+		case <-t.sendReady:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	data, err := json.Marshal(env)

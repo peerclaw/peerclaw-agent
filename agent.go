@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/peerclaw/peerclaw-agent/conn"
 	"github.com/peerclaw/peerclaw-agent/discovery"
+	"github.com/peerclaw/peerclaw-agent/filetransfer"
 	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
@@ -18,6 +20,7 @@ import (
 	"github.com/peerclaw/peerclaw-core/envelope"
 	"github.com/peerclaw/peerclaw-core/identity"
 	pccoresignaling "github.com/peerclaw/peerclaw-core/signaling"
+	"github.com/pion/webrtc/v4"
 )
 
 // MessageHandler is called when an incoming envelope is received.
@@ -90,6 +93,13 @@ type Options struct {
 	// LastSyncPath is the file path for persisting the last inbox sync timestamp.
 	LastSyncPath string
 
+	// FileTransferDir is the directory to save received files.
+	// Defaults to the current directory.
+	FileTransferDir string
+
+	// ResumeStatePath is the directory for file transfer resume state files.
+	ResumeStatePath string
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
 }
@@ -118,6 +128,8 @@ type Agent struct {
 	connRequestHandler ConnectionRequestHandler
 	connManager        *conn.Manager
 	mailbox            *transport.Mailbox
+	fileTransfer       *filetransfer.Manager
+	ftDCHandler        func(peerID string, dc filetransfer.DataChannel)
 	peerInboxCache     map[string]*peerInboxInfo // agentID → inbox info
 	msgCache           *transport.MessageCache
 	agentID            string
@@ -125,6 +137,43 @@ type Agent struct {
 	mu                 sync.RWMutex
 	running            bool
 	stopNonceCleaner   context.CancelFunc
+}
+
+// agentTransportProvider adapts the Agent's peer/transport layer for the file transfer Manager.
+type agentTransportProvider struct {
+	agent *Agent
+}
+
+func (p *agentTransportProvider) CreateFileDataChannel(peerID, label string) (filetransfer.DataChannel, error) {
+	pr, ok := p.agent.peerManager.GetPeer(peerID)
+	if !ok {
+		return nil, fmt.Errorf("no connection to peer %s", peerID)
+	}
+	wrtc, ok := pr.Transport.(*transport.WebRTCTransport)
+	if !ok {
+		return nil, fmt.Errorf("peer %s transport is not WebRTC", peerID)
+	}
+	ordered := true
+	dc, err := wrtc.CreateDataChannel(label, &webrtc.DataChannelInit{
+		Ordered: &ordered,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return filetransfer.NewWebRTCDataChannel(dc), nil
+}
+
+func (p *agentTransportProvider) RegisterFileDataChannelHandler(prefix string, handler func(peerID string, dc filetransfer.DataChannel)) {
+	// We need to register on ALL existing and future WebRTC transports.
+	// The connection manager creates transports, so we register a callback
+	// that will be called for each new peer connection.
+	// For now, we'll register on peers as they connect.
+	// The handler needs to be registered after each connection is established.
+	p.agent.mu.Lock()
+	p.agent.ftDCHandler = func(peerID string, dc filetransfer.DataChannel) {
+		handler(peerID, dc)
+	}
+	p.agent.mu.Unlock()
 }
 
 // NewSimple creates an Agent with minimal configuration for enterprise intranet deployments.
@@ -321,6 +370,45 @@ func (a *Agent) Start(ctx context.Context) error {
 		Logger: a.logger,
 	})
 	a.connManager.Start(ctx)
+
+	// Initialize file transfer manager.
+	a.fileTransfer = filetransfer.NewManager(filetransfer.Config{
+		AgentID:    a.agentID,
+		PrivateKey: a.keypair.PrivateKey,
+		SendEnvelope: func(sendCtx context.Context, env *envelope.Envelope) error {
+			return a.Send(sendCtx, env)
+		},
+		GetSessionKey: func(peerID string) []byte {
+			a.mu.RLock()
+			sk := a.sessionKeys[peerID]
+			a.mu.RUnlock()
+			if sk == nil {
+				return nil
+			}
+			// Export the raw key bytes for chunk encryption.
+			return sk.KeyBytes()
+		},
+		TrustCheck: func(peerID string) bool {
+			return a.trustStore.IsAllowed(peerID)
+		},
+		Transport:       &agentTransportProvider{agent: a},
+		DownloadDir:     a.opts.FileTransferDir,
+		ResumeStatePath: a.opts.ResumeStatePath,
+		Logger:          a.logger,
+	})
+	a.fileTransfer.SetPeerPublicKeyResolver(func(peerID string) ed25519.PublicKey {
+		pubKeyStr := a.resolvePeerPublicKey(peerID)
+		if pubKeyStr == "" {
+			return nil
+		}
+		pubKey, err := identity.ParsePublicKey(pubKeyStr)
+		if err != nil {
+			return nil
+		}
+		return pubKey
+	})
+	a.fileTransfer.Start()
+	a.Handle("file_transfer", a.fileTransfer.HandleEnvelope)
 
 	// Start nonce cleanup goroutine.
 	nonceCtx, nonceCancel := context.WithCancel(ctx)
@@ -912,6 +1000,39 @@ func (a *Agent) GetTask(traceID string) (*Task, bool) {
 // ListTasks returns all tracked tasks.
 func (a *Agent) ListTasks() []*Task {
 	return a.taskTracker.List()
+}
+
+// SendFile initiates a file transfer to a peer.
+// Returns the file ID for tracking the transfer.
+func (a *Agent) SendFile(ctx context.Context, peerID, filePath string) (string, error) {
+	if a.fileTransfer == nil {
+		return "", fmt.Errorf("file transfer not initialized")
+	}
+	return a.fileTransfer.InitiateSend(ctx, peerID, filePath)
+}
+
+// ListTransfers returns info about all file transfers.
+func (a *Agent) ListTransfers() []filetransfer.TransferInfo {
+	if a.fileTransfer == nil {
+		return nil
+	}
+	return a.fileTransfer.ListTransfers()
+}
+
+// GetTransfer returns info about a specific file transfer.
+func (a *Agent) GetTransfer(fileID string) (filetransfer.TransferInfo, bool) {
+	if a.fileTransfer == nil {
+		return filetransfer.TransferInfo{}, false
+	}
+	return a.fileTransfer.GetTransfer(fileID)
+}
+
+// CancelTransfer cancels a file transfer.
+func (a *Agent) CancelTransfer(fileID string) error {
+	if a.fileTransfer == nil {
+		return fmt.Errorf("file transfer not initialized")
+	}
+	return a.fileTransfer.Cancel(fileID)
 }
 
 // Discover finds agents by capabilities on the platform.
