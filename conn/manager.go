@@ -36,6 +36,7 @@ type Config struct {
 	X25519PubKey     string
 	OnSession        func(peerID, x25519 string) error
 	ConnectionGate   func(peerID string) bool // returns true to allow connection
+	OnContactAdded   func(agentID string)     // called when server notifies contact was added
 	DefaultSTUNURL   string                   // STUN server URL used when no ICE servers are configured
 	Logger           *slog.Logger
 }
@@ -62,6 +63,7 @@ type Manager struct {
 	x25519PubKey   string
 	onSession      func(peerID, x25519 string) error
 	connectionGate func(peerID string) bool
+	onContactAdded func(agentID string)
 	defaultSTUNURL string
 	logger         *slog.Logger
 
@@ -90,6 +92,7 @@ func New(cfg Config) *Manager {
 		x25519PubKey:   cfg.X25519PubKey,
 		onSession:      cfg.OnSession,
 		connectionGate: cfg.ConnectionGate,
+		onContactAdded: cfg.OnContactAdded,
 		defaultSTUNURL: stunURL,
 		logger:         logger,
 		pending:        make(map[string]*pendingConn),
@@ -243,6 +246,8 @@ func (m *Manager) signalingLoop() {
 				m.handleAnswer(msg)
 			case pcsignaling.MessageTypeICECandidate:
 				m.handleICECandidate(msg)
+			case pcsignaling.MessageTypeContactAdded:
+				m.handleContactAdded(msg)
 			case pcsignaling.MessageTypeSignalingError:
 				m.handleSignalingError(msg)
 			}
@@ -468,6 +473,23 @@ func (m *Manager) handleSignalingError(msg pcsignaling.SignalMessage) {
 
 	for _, peerID := range toCleanup {
 		m.logger.Info("pending connection failed due to signaling error", "peer", peerID)
+	}
+}
+
+// handleContactAdded processes a contact_added notification from the server.
+func (m *Manager) handleContactAdded(msg pcsignaling.SignalMessage) {
+	if m.onContactAdded == nil {
+		return
+	}
+	var payload struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		m.logger.Warn("failed to parse contact_added payload", "error", err)
+		return
+	}
+	if payload.AgentID != "" {
+		m.onContactAdded(payload.AgentID)
 	}
 }
 

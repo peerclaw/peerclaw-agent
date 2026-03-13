@@ -54,8 +54,9 @@ type Config struct {
 	GetSessionKey   SessionKeyFunc
 	TrustCheck      TrustCheckFunc
 	Transport       TransportProvider
-	DownloadDir     string // directory to save received files
-	ResumeStatePath string // directory for resume state files
+	OnComplete      func(transfer *Transfer) // called when transfer reaches terminal state
+	DownloadDir     string                   // directory to save received files
+	ResumeStatePath string                   // directory for resume state files
 	Logger          *slog.Logger
 }
 
@@ -369,6 +370,7 @@ func (m *Manager) handleFileReject(_ context.Context, env *envelope.Envelope) er
 
 	t.Error = "rejected: " + reject.Reason
 	_ = t.Transition(StateFailed)
+	m.fireOnComplete(t)
 
 	m.logger.Info("file offer rejected",
 		"file_id", reject.FileID,
@@ -447,6 +449,8 @@ func (m *Manager) handleTransferComplete(_ context.Context, env *envelope.Envelo
 		t.Error = "SHA-256 mismatch at receiver"
 		_ = t.Transition(StateFailed)
 	}
+
+	m.fireOnComplete(t)
 
 	// Clean up sender.
 	m.mu.Lock()
@@ -532,6 +536,7 @@ func (m *Manager) handleIncomingDataChannel(peerID string, dc DataChannel) {
 
 	// Start the receiver.
 	recv := NewReceiver(t, dc, m.cfg.SendEnvelope, m.cfg.AgentID, m.logger)
+	recv.onComplete = func(tr *Transfer) { m.fireOnComplete(tr) }
 	m.mu.Lock()
 	m.receivers[fileID] = recv
 	m.mu.Unlock()
@@ -616,6 +621,8 @@ func (m *Manager) Cancel(fileID string) error {
 	}
 	m.mu.Unlock()
 
+	m.fireOnComplete(t)
+
 	return nil
 }
 
@@ -626,6 +633,7 @@ func (m *Manager) timeoutLoop() {
 
 	for range ticker.C {
 		m.mu.Lock()
+		var timedOut []*Transfer
 		for _, t := range m.transfers {
 			if t.IsTerminal() {
 				continue
@@ -642,10 +650,15 @@ func (m *Manager) timeoutLoop() {
 					r.Stop()
 					delete(m.receivers, t.FileID)
 				}
+				timedOut = append(timedOut, t)
 				m.logger.Warn("transfer timed out", "file_id", t.FileID, "state", t.State)
 			}
 		}
 		m.mu.Unlock()
+
+		for _, t := range timedOut {
+			m.fireOnComplete(t)
+		}
 	}
 }
 
@@ -662,6 +675,13 @@ func (m *Manager) SetPeerPublicKeyResolver(resolver func(string) ed25519.PublicK
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.resolvePeerKey = resolver
+}
+
+// fireOnComplete calls the OnComplete callback if configured and the transfer is terminal.
+func (m *Manager) fireOnComplete(t *Transfer) {
+	if m.cfg.OnComplete != nil && t.IsTerminal() {
+		m.cfg.OnComplete(t)
+	}
 }
 
 // hashFile computes the SHA-256 hash of a file.

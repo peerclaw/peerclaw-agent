@@ -26,6 +26,7 @@ type Receiver struct {
 	dc         DataChannel
 	sendFn     SendFunc
 	agentID    string
+	onComplete func(*Transfer)
 	logger     *slog.Logger
 	cancelOnce sync.Once
 	cancel     context.CancelFunc
@@ -190,6 +191,10 @@ func (r *Receiver) finalize(ctx context.Context, f *os.File) {
 	} else {
 		r.transfer.Error = "SHA-256 mismatch"
 		_ = r.transfer.Transition(StateFailed)
+	}
+
+	if r.onComplete != nil {
+		r.onComplete(r.transfer)
 	}
 
 	// Close data channel.

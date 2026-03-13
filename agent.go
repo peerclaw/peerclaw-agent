@@ -100,6 +100,14 @@ type Options struct {
 	// ResumeStatePath is the directory for file transfer resume state files.
 	ResumeStatePath string
 
+	// OnFileTransferComplete is called when a file transfer reaches a terminal state
+	// (done, failed, or cancelled).
+	OnFileTransferComplete func(info filetransfer.TransferInfo)
+
+	// SkipRegistration skips server registration on Start(). Use when the agent
+	// is already registered and you only need P2P connectivity.
+	SkipRegistration bool
+
 	// Logger is the structured logger. Uses slog.Default() if nil.
 	Logger *slog.Logger
 }
@@ -273,52 +281,57 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.running = true
 	a.mu.Unlock()
 
-	// Register with the platform.
-	var regErr error
-	if a.opts.ClaimToken != "" {
-		// Claim mode: sign the token and use the claim endpoint.
-		claimer, ok := a.discovery.(discovery.ClaimRegisterer)
-		if !ok {
+	if a.opts.SkipRegistration {
+		// Derive agent ID from public key without server registration.
+		a.agentID = a.keypair.PublicKeyString()
+	} else {
+		// Register with the platform.
+		var regErr error
+		if a.opts.ClaimToken != "" {
+			// Claim mode: sign the token and use the claim endpoint.
+			claimer, ok := a.discovery.(discovery.ClaimRegisterer)
+			if !ok {
+				a.mu.Lock()
+				a.running = false
+				a.mu.Unlock()
+				return fmt.Errorf("discovery backend does not support claim registration")
+			}
+			sig := identity.Sign(a.keypair.PrivateKey, []byte(a.opts.ClaimToken))
+			card, err := claimer.ClaimRegister(ctx, discovery.ClaimRequest{
+				Token:        a.opts.ClaimToken,
+				Name:         a.opts.Name,
+				PublicKey:    a.keypair.PublicKeyString(),
+				Capabilities: a.Capabilities(),
+				Protocols:    a.opts.Protocols,
+				Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
+				Signature:    sig,
+			})
+			if err != nil {
+				regErr = fmt.Errorf("claim register: %w", err)
+			} else {
+				a.agentID = card.ID
+			}
+		} else {
+			// Standard registration mode.
+			card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
+				Name:         a.opts.Name,
+				PublicKey:    a.keypair.PublicKeyString(),
+				Capabilities: a.Capabilities(),
+				Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
+				Protocols:    a.opts.Protocols,
+			})
+			if err != nil {
+				regErr = fmt.Errorf("register with platform: %w", err)
+			} else {
+				a.agentID = card.ID
+			}
+		}
+		if regErr != nil {
 			a.mu.Lock()
 			a.running = false
 			a.mu.Unlock()
-			return fmt.Errorf("discovery backend does not support claim registration")
+			return regErr
 		}
-		sig := identity.Sign(a.keypair.PrivateKey, []byte(a.opts.ClaimToken))
-		card, err := claimer.ClaimRegister(ctx, discovery.ClaimRequest{
-			Token:        a.opts.ClaimToken,
-			Name:         a.opts.Name,
-			PublicKey:    a.keypair.PublicKeyString(),
-			Capabilities: a.Capabilities(),
-			Protocols:    a.opts.Protocols,
-			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
-			Signature:    sig,
-		})
-		if err != nil {
-			regErr = fmt.Errorf("claim register: %w", err)
-		} else {
-			a.agentID = card.ID
-		}
-	} else {
-		// Standard registration mode.
-		card, err := a.discovery.Register(ctx, discovery.RegisterRequest{
-			Name:         a.opts.Name,
-			PublicKey:    a.keypair.PublicKeyString(),
-			Capabilities: a.Capabilities(),
-			Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
-			Protocols:    a.opts.Protocols,
-		})
-		if err != nil {
-			regErr = fmt.Errorf("register with platform: %w", err)
-		} else {
-			a.agentID = card.ID
-		}
-	}
-	if regErr != nil {
-		a.mu.Lock()
-		a.running = false
-		a.mu.Unlock()
-		return regErr
 	}
 
 	// Set up RegistryClient authentication and sync contacts from server.
@@ -370,6 +383,13 @@ func (a *Agent) Start(ctx context.Context) error {
 		MsgHandler:   a.HandleIncomingEnvelope,
 		X25519PubKey: x25519Pub,
 		OnSession:    a.EstablishSession,
+		OnContactAdded: func(agentID string) {
+			if err := a.trustStore.SetTrust(agentID, security.TrustVerified); err != nil {
+				a.logger.Warn("failed to set trust for new contact", "agent_id", agentID, "error", err)
+				return
+			}
+			a.logger.Info("contact added via server notification", "agent_id", agentID)
+		},
 		ConnectionGate: func(peerID string) bool {
 			level := a.trustStore.Check(peerID)
 			if level == security.TrustBlocked {
@@ -395,7 +415,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.connManager.Start(ctx)
 
 	// Initialize file transfer manager.
-	a.fileTransfer = filetransfer.NewManager(filetransfer.Config{
+	ftCfg := filetransfer.Config{
 		AgentID:    a.agentID,
 		PrivateKey: a.keypair.PrivateKey,
 		SendEnvelope: func(sendCtx context.Context, env *envelope.Envelope) error {
@@ -418,7 +438,13 @@ func (a *Agent) Start(ctx context.Context) error {
 		DownloadDir:     a.opts.FileTransferDir,
 		ResumeStatePath: a.opts.ResumeStatePath,
 		Logger:          a.logger,
-	})
+	}
+	if a.opts.OnFileTransferComplete != nil {
+		ftCfg.OnComplete = func(t *filetransfer.Transfer) {
+			a.opts.OnFileTransferComplete(t.Info())
+		}
+	}
+	a.fileTransfer = filetransfer.NewManager(ftCfg)
 	a.fileTransfer.SetPeerPublicKeyResolver(func(peerID string) ed25519.PublicKey {
 		pubKeyStr := a.resolvePeerPublicKey(peerID)
 		if pubKeyStr == "" {
