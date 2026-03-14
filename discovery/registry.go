@@ -122,7 +122,8 @@ func (c *RegistryClient) Deregister(ctx context.Context, agentID string) error {
 
 // HeartbeatResponse holds the response from a heartbeat request.
 type HeartbeatResponse struct {
-	NextDeadline time.Time `json:"next_deadline"`
+	NextDeadline         time.Time `json:"next_deadline"`
+	PendingNotifications int       `json:"pending_notifications,omitempty"`
 }
 
 // Heartbeat sends a heartbeat to the platform.
