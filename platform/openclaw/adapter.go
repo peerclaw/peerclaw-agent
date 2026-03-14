@@ -11,22 +11,20 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/peerclaw/peerclaw-agent/platform"
 )
 
-// OutboundHandler is called when OpenClaw produces a final AI response for a session.
-// sessionKey identifies the conversation, text is the AI response.
-type OutboundHandler func(sessionKey, text string)
-
-// Client connects to an OpenClaw gateway via WebSocket and provides
+// Adapter connects to an OpenClaw gateway via WebSocket and provides
 // methods to send/inject chat messages and receive AI responses.
-type Client struct {
+// It implements the platform.Adapter interface.
+type Adapter struct {
 	cfg             Config
 	agentID         string
 	agentName       string
 	version         string
 	conn            *websocket.Conn
 	pending         sync.Map // reqID → chan *ResponseFrame
-	outboundHandler OutboundHandler
+	outboundHandler platform.OutboundHandler
 	reqCounter      atomic.Int64
 	logger          *slog.Logger
 	mu              sync.Mutex
@@ -36,12 +34,12 @@ type Client struct {
 	cancel          context.CancelFunc
 }
 
-// NewClient creates a new OpenClaw gateway client.
-func NewClient(cfg Config, agentID, agentName, version string, logger *slog.Logger) *Client {
+// NewAdapter creates a new OpenClaw platform adapter.
+func NewAdapter(cfg Config, agentID, agentName, version string, logger *slog.Logger) *Adapter {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{
+	return &Adapter{
 		cfg:       cfg,
 		agentID:   agentID,
 		agentName: agentName,
@@ -50,25 +48,28 @@ func NewClient(cfg Config, agentID, agentName, version string, logger *slog.Logg
 	}
 }
 
+// Name returns "openclaw".
+func (a *Adapter) Name() string { return "openclaw" }
+
 // SetOutboundHandler registers a handler called when OpenClaw produces a final AI response.
-func (c *Client) SetOutboundHandler(handler OutboundHandler) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.outboundHandler = handler
+func (a *Adapter) SetOutboundHandler(handler platform.OutboundHandler) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.outboundHandler = handler
 }
 
 // Connect establishes a WebSocket connection to the OpenClaw gateway and performs the handshake.
-func (c *Client) Connect(ctx context.Context) error {
-	conn, _, err := websocket.Dial(ctx, c.cfg.GatewayURL, nil)
+func (a *Adapter) Connect(ctx context.Context) error {
+	conn, _, err := websocket.Dial(ctx, a.cfg.GatewayURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial openclaw gateway: %w", err)
 	}
 	conn.SetReadLimit(512 * 1024) // 512KB
 
-	c.mu.Lock()
-	c.conn = conn
-	c.closed = false
-	c.mu.Unlock()
+	a.mu.Lock()
+	a.conn = conn
+	a.closed = false
+	a.mu.Unlock()
 
 	// Step 1: Read connect.challenge event.
 	_, data, err := conn.Read(ctx)
@@ -86,21 +87,21 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Step 2: Send connect params.
 	connectReq := RequestFrame{
 		Type:   "req",
-		ID:     c.nextReqID(),
+		ID:     a.nextReqID(),
 		Method: "connect",
 	}
 	params := ConnectParams{
 		MinProtocol: 1,
 		MaxProtocol: 1,
 		Client: ConnectClientInfo{
-			ID:       c.agentID,
+			ID:       a.agentID,
 			Mode:     "backend",
 			Platform: "go",
-			Version:  c.version,
+			Version:  a.version,
 		},
 	}
-	if c.cfg.AuthToken != "" {
-		params.Auth = &ConnectAuth{Token: c.cfg.AuthToken}
+	if a.cfg.AuthToken != "" {
+		params.Auth = &ConnectAuth{Token: a.cfg.AuthToken}
 	}
 	paramsJSON, _ := json.Marshal(params)
 	connectReq.Params = paramsJSON
@@ -124,12 +125,12 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("expected hello-ok, got: %s", string(data))
 	}
 
-	c.mu.Lock()
-	c.connID = helloOk.Server.ConnID
-	c.tickInterval = time.Duration(helloOk.Policy.TickIntervalMs) * time.Millisecond
-	c.mu.Unlock()
+	a.mu.Lock()
+	a.connID = helloOk.Server.ConnID
+	a.tickInterval = time.Duration(helloOk.Policy.TickIntervalMs) * time.Millisecond
+	a.mu.Unlock()
 
-	c.logger.Info("openclaw gateway connected",
+	a.logger.Info("openclaw gateway connected",
 		"conn_id", helloOk.Server.ConnID,
 		"version", helloOk.Server.Version,
 		"tick_ms", helloOk.Policy.TickIntervalMs,
@@ -137,65 +138,65 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	// Start read loop and keep-alive.
 	connCtx, cancel := context.WithCancel(ctx)
-	c.mu.Lock()
-	c.cancel = cancel
-	c.mu.Unlock()
+	a.mu.Lock()
+	a.cancel = cancel
+	a.mu.Unlock()
 
-	go c.readLoop(connCtx)
-	if c.tickInterval > 0 {
-		go c.keepAlive(connCtx)
+	go a.readLoop(connCtx)
+	if a.tickInterval > 0 {
+		go a.keepAlive(connCtx)
 	}
 
 	return nil
 }
 
 // Close closes the gateway connection.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (a *Adapter) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-	if c.closed {
+	if a.closed {
 		return nil
 	}
-	c.closed = true
+	a.closed = true
 
-	if c.cancel != nil {
-		c.cancel()
+	if a.cancel != nil {
+		a.cancel()
 	}
 
-	if c.conn != nil {
-		return c.conn.Close(websocket.StatusNormalClosure, "")
+	if a.conn != nil {
+		return a.conn.Close(websocket.StatusNormalClosure, "")
 	}
 	return nil
 }
 
-// ChatSend sends a user message to an OpenClaw conversation session.
+// SendChat sends a user message to an OpenClaw conversation session.
 // This triggers AI processing; the response arrives via the OutboundHandler.
-func (c *Client) ChatSend(ctx context.Context, sessionKey, message string) error {
+func (a *Adapter) SendChat(ctx context.Context, sessionKey, message string) error {
 	params := ChatSendParams{
 		SessionKey:     sessionKey,
 		Message:        message,
 		IdempotencyKey: uuid.New().String(),
 	}
-	_, err := c.request(ctx, "chat.send", params)
+	_, err := a.request(ctx, "chat.send", params)
 	return err
 }
 
-// ChatInject injects a system/notification message into an OpenClaw conversation.
-// Unlike ChatSend, this does not trigger AI processing.
-func (c *Client) ChatInject(ctx context.Context, sessionKey, message, label string) error {
+// InjectNotification injects a system/notification message into an OpenClaw conversation.
+// Unlike SendChat, this does not trigger AI processing.
+func (a *Adapter) InjectNotification(ctx context.Context, sessionKey, message, label string) error {
 	params := ChatInjectParams{
 		SessionKey: sessionKey,
 		Message:    message,
 		Label:      label,
 	}
-	_, err := c.request(ctx, "chat.inject", params)
+	_, err := a.request(ctx, "chat.inject", params)
 	return err
 }
 
 // request sends an RPC request and waits for a response.
-func (c *Client) request(ctx context.Context, method string, params any) (*ResponseFrame, error) {
-	reqID := c.nextReqID()
+func (a *Adapter) request(ctx context.Context, method string, params any) (*ResponseFrame, error) {
+	reqID := a.nextReqID()
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return nil, fmt.Errorf("marshal params: %w", err)
@@ -210,12 +211,12 @@ func (c *Client) request(ctx context.Context, method string, params any) (*Respo
 	data, _ := json.Marshal(req)
 
 	ch := make(chan *ResponseFrame, 1)
-	c.pending.Store(reqID, ch)
-	defer c.pending.Delete(reqID)
+	a.pending.Store(reqID, ch)
+	defer a.pending.Delete(reqID)
 
-	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
+	a.mu.Lock()
+	conn := a.conn
+	a.mu.Unlock()
 	if conn == nil {
 		return nil, fmt.Errorf("not connected to openclaw gateway")
 	}
@@ -242,25 +243,25 @@ func (c *Client) request(ctx context.Context, method string, params any) (*Respo
 	}
 }
 
-func (c *Client) readLoop(ctx context.Context) {
+func (a *Adapter) readLoop(ctx context.Context) {
 	defer func() {
-		if !c.isClosed() {
-			go c.reconnectLoop(ctx)
+		if !a.isClosed() {
+			go a.reconnectLoop(ctx)
 		}
 	}()
 
 	for {
-		_, data, err := c.conn.Read(ctx)
+		_, data, err := a.conn.Read(ctx)
 		if err != nil {
-			if !c.isClosed() {
-				c.logger.Error("openclaw read error", "error", err)
+			if !a.isClosed() {
+				a.logger.Error("openclaw read error", "error", err)
 			}
 			return
 		}
 
 		var frame rawFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
-			c.logger.Warn("invalid openclaw frame", "error", err)
+			a.logger.Warn("invalid openclaw frame", "error", err)
 			continue
 		}
 
@@ -268,10 +269,10 @@ func (c *Client) readLoop(ctx context.Context) {
 		case "res":
 			var resp ResponseFrame
 			if err := json.Unmarshal(data, &resp); err != nil {
-				c.logger.Warn("invalid response frame", "error", err)
+				a.logger.Warn("invalid response frame", "error", err)
 				continue
 			}
-			if val, ok := c.pending.Load(resp.ID); ok {
+			if val, ok := a.pending.Load(resp.ID); ok {
 				ch := val.(chan *ResponseFrame)
 				select {
 				case ch <- &resp:
@@ -280,12 +281,12 @@ func (c *Client) readLoop(ctx context.Context) {
 			}
 
 		case "event":
-			c.handleEvent(data, frame.Event)
+			a.handleEvent(data, frame.Event)
 		}
 	}
 }
 
-func (c *Client) handleEvent(data []byte, eventName string) {
+func (a *Adapter) handleEvent(data []byte, eventName string) {
 	switch eventName {
 	case "chat":
 		var evt EventFrame
@@ -294,15 +295,14 @@ func (c *Client) handleEvent(data []byte, eventName string) {
 		}
 		var chatEvt ChatEvent
 		if err := json.Unmarshal(evt.Payload, &chatEvt); err != nil {
-			c.logger.Warn("invalid chat event payload", "error", err)
+			a.logger.Warn("invalid chat event payload", "error", err)
 			return
 		}
 		if chatEvt.State == "final" {
-			c.mu.Lock()
-			handler := c.outboundHandler
-			c.mu.Unlock()
+			a.mu.Lock()
+			handler := a.outboundHandler
+			a.mu.Unlock()
 			if handler != nil {
-				// Extract message text from the event.
 				text := extractMessageText(chatEvt.Message)
 				if text != "" {
 					handler(chatEvt.SessionKey, text)
@@ -311,15 +311,15 @@ func (c *Client) handleEvent(data []byte, eventName string) {
 		}
 
 	case "tick":
-		// Keep-alive acknowledged, nothing to do.
+		// Keep-alive acknowledged.
 
 	default:
-		c.logger.Debug("unhandled openclaw event", "event", eventName)
+		a.logger.Debug("unhandled openclaw event", "event", eventName)
 	}
 }
 
-func (c *Client) keepAlive(ctx context.Context) {
-	ticker := time.NewTicker(c.tickInterval)
+func (a *Adapter) keepAlive(ctx context.Context) {
+	ticker := time.NewTicker(a.tickInterval)
 	defer ticker.Stop()
 
 	for {
@@ -327,10 +327,10 @@ func (c *Client) keepAlive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.mu.Lock()
-			conn := c.conn
-			closed := c.closed
-			c.mu.Unlock()
+			a.mu.Lock()
+			conn := a.conn
+			closed := a.closed
+			a.mu.Unlock()
 			if closed || conn == nil {
 				return
 			}
@@ -340,14 +340,14 @@ func (c *Client) keepAlive(ctx context.Context) {
 			}
 			data, _ := json.Marshal(ping)
 			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-				c.logger.Debug("openclaw tick failed", "error", err)
+				a.logger.Debug("openclaw tick failed", "error", err)
 				return
 			}
 		}
 	}
 }
 
-func (c *Client) reconnectLoop(ctx context.Context) {
+func (a *Adapter) reconnectLoop(ctx context.Context) {
 	delay := time.Second
 	maxDelay := 60 * time.Second
 
@@ -357,28 +357,28 @@ func (c *Client) reconnectLoop(ctx context.Context) {
 			return
 		case <-time.After(delay):
 		}
-		if c.isClosed() {
+		if a.isClosed() {
 			return
 		}
-		c.logger.Info("attempting openclaw reconnect", "delay", delay)
-		if err := c.Connect(ctx); err != nil {
-			c.logger.Warn("openclaw reconnect failed", "error", err)
+		a.logger.Info("attempting openclaw reconnect", "delay", delay)
+		if err := a.Connect(ctx); err != nil {
+			a.logger.Warn("openclaw reconnect failed", "error", err)
 			delay = min(delay*2, maxDelay)
 			continue
 		}
-		c.logger.Info("openclaw reconnected")
+		a.logger.Info("openclaw reconnected")
 		return
 	}
 }
 
-func (c *Client) isClosed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.closed
+func (a *Adapter) isClosed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
 }
 
-func (c *Client) nextReqID() string {
-	return fmt.Sprintf("pc-%d", c.reqCounter.Add(1))
+func (a *Adapter) nextReqID() string {
+	return fmt.Sprintf("pc-%d", a.reqCounter.Add(1))
 }
 
 // extractMessageText attempts to get a string representation from a chat event message.
@@ -390,14 +390,12 @@ func extractMessageText(msg any) string {
 	case string:
 		return v
 	case map[string]any:
-		// Try common fields: "text", "content".
 		if text, ok := v["text"].(string); ok {
 			return text
 		}
 		if content, ok := v["content"].(string); ok {
 			return content
 		}
-		// Fallback: marshal to JSON.
 		data, _ := json.Marshal(v)
 		return string(data)
 	default:

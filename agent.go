@@ -13,9 +13,8 @@ import (
 	"github.com/peerclaw/peerclaw-agent/conn"
 	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/filetransfer"
-	"github.com/peerclaw/peerclaw-agent/openclaw"
 	"github.com/peerclaw/peerclaw-agent/peer"
-	"github.com/peerclaw/peerclaw-agent/sdkversion"
+	"github.com/peerclaw/peerclaw-agent/platform"
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
 	"github.com/peerclaw/peerclaw-agent/transport"
@@ -119,10 +118,10 @@ type Options struct {
 	// (done, failed, or cancelled).
 	OnFileTransferComplete func(info filetransfer.TransferInfo)
 
-	// OpenClaw holds optional OpenClaw gateway integration settings.
-	// When set, the agent connects to OpenClaw and forwards P2P messages
-	// and server notifications to OpenClaw conversations.
-	OpenClaw *openclaw.Config
+	// Platform is an optional AI orchestration platform adapter.
+	// When set, the agent forwards P2P messages and server notifications
+	// to the platform and routes AI responses back via P2P.
+	Platform platform.Adapter
 
 	// SkipRegistration skips server registration on Start(). Use when the agent
 	// is already registered and you only need P2P connectivity.
@@ -155,7 +154,7 @@ type Agent struct {
 	handler              MessageHandler
 	connRequestHandler   ConnectionRequestHandler
 	notificationHandler  func(n *NotificationPayload)
-	openclawClient       *openclaw.Client
+	platformAdapter      platform.Adapter
 	connManager        *conn.Manager
 	mailbox            *transport.Mailbox
 	fileTransfer       *filetransfer.Manager
@@ -536,37 +535,37 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
-	// Initialize OpenClaw gateway integration.
-	if a.opts.OpenClaw != nil {
-		oc := openclaw.NewClient(*a.opts.OpenClaw, a.agentID, a.opts.Name, sdkversion.Version, a.logger)
-		oc.SetOutboundHandler(func(sessionKey, text string) {
-			peerID := openclaw.ParsePeerFromSessionKey(sessionKey)
+	// Initialize platform adapter integration.
+	if a.opts.Platform != nil {
+		pa := a.opts.Platform
+		pa.SetOutboundHandler(func(sessionKey, text string) {
+			peerID := platform.ParsePeerFromSessionKey(sessionKey)
 			if peerID == "" {
 				return
 			}
 			env := envelope.New(a.agentID, peerID, "peerclaw", []byte(text))
 			_ = a.Send(context.Background(), env)
 		})
-		if err := oc.Connect(ctx); err != nil {
-			a.logger.Warn("openclaw connect failed", "error", err)
+		if err := pa.Connect(ctx); err != nil {
+			a.logger.Warn("platform connect failed", "platform", pa.Name(), "error", err)
 		} else {
-			a.openclawClient = oc
+			a.platformAdapter = pa
 		}
 
-		// Forward notifications to OpenClaw.
-		if a.openclawClient != nil {
+		// Forward notifications to platform.
+		if a.platformAdapter != nil {
 			a.OnNotification(func(n *NotificationPayload) {
-				text := openclaw.FormatNotification(n.Severity, n.Title, n.Body)
-				_ = a.openclawClient.ChatInject(ctx, "peerclaw:notifications", text, "peerclaw-notification")
+				text := platform.FormatNotification(n.Severity, n.Title, n.Body)
+				_ = a.platformAdapter.InjectNotification(ctx, platform.NotificationSessionKey, text, "peerclaw-notification")
 			})
 		}
 
-		// Forward P2P messages to OpenClaw.
-		if a.openclawClient != nil {
+		// Forward P2P messages to platform.
+		if a.platformAdapter != nil {
 			prevHandler := a.handler
 			a.OnMessage(func(msgCtx context.Context, env *envelope.Envelope) {
-				sessionKey := openclaw.SessionKeyForPeer(env.Source)
-				_ = a.openclawClient.ChatSend(msgCtx, sessionKey, string(env.Payload))
+				sessionKey := platform.SessionKeyForPeer(env.Source)
+				_ = a.platformAdapter.SendChat(msgCtx, sessionKey, string(env.Payload))
 				if prevHandler != nil {
 					prevHandler(msgCtx, env)
 				}
@@ -630,9 +629,9 @@ func (a *Agent) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Close OpenClaw gateway.
-	if a.openclawClient != nil {
-		a.openclawClient.Close()
+	// Close platform adapter.
+	if a.platformAdapter != nil {
+		a.platformAdapter.Close()
 	}
 
 	// Close signaling and peers.

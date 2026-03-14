@@ -42,10 +42,10 @@ type rawFrame struct {
 
 // ConnectParams is sent by the client after receiving the connect.challenge event.
 type ConnectParams struct {
-	MinProtocol int                  `json:"minProtocol"`
-	MaxProtocol int                  `json:"maxProtocol"`
-	Client      ConnectClientInfo    `json:"client"`
-	Auth        *ConnectAuth         `json:"auth,omitempty"`
+	MinProtocol int               `json:"minProtocol"`
+	MaxProtocol int               `json:"maxProtocol"`
+	Client      ConnectClientInfo `json:"client"`
+	Auth        *ConnectAuth      `json:"auth,omitempty"`
 }
 
 // ConnectClientInfo identifies the connecting client.
@@ -63,10 +63,10 @@ type ConnectAuth struct {
 
 // HelloOk is the gateway response after a successful handshake.
 type HelloOk struct {
-	Type     string        `json:"type"` // "hello-ok"
-	Protocol int           `json:"protocol"`
-	Server   HelloServer   `json:"server"`
-	Policy   HelloPolicy   `json:"policy"`
+	Type     string      `json:"type"` // "hello-ok"
+	Protocol int         `json:"protocol"`
+	Server   HelloServer `json:"server"`
+	Policy   HelloPolicy `json:"policy"`
 }
 
 // HelloServer describes the gateway server identity.
