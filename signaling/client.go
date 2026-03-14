@@ -26,7 +26,8 @@ type Client struct {
 	mu             sync.Mutex
 	closed         bool
 	iceServers     []pcsignaling.ICEServerConfig
-	bridgeHandler  BridgeMessageHandler
+	bridgeHandler       BridgeMessageHandler
+	notificationHandler func(payload []byte)
 }
 
 // NewClient creates a new signaling client.
@@ -120,6 +121,17 @@ func (c *Client) readLoop(ctx context.Context) {
 			continue
 		}
 
+		// Handle notification messages via registered handler.
+		if msg.Type == pcsignaling.MessageTypeNotification {
+			c.mu.Lock()
+			handler := c.notificationHandler
+			c.mu.Unlock()
+			if handler != nil {
+				handler(msg.Payload)
+			}
+			continue
+		}
+
 		select {
 		case c.inbox <- msg:
 		default:
@@ -164,6 +176,13 @@ func (c *Client) SetBridgeHandler(handler BridgeMessageHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bridgeHandler = handler
+}
+
+// SetNotificationHandler registers a handler for notification messages from the server.
+func (c *Client) SetNotificationHandler(handler func(payload []byte)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notificationHandler = handler
 }
 
 // SetAgentID sets the agent ID for the signaling client.

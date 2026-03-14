@@ -64,6 +64,8 @@ func (m *mockSignalingClient) ICEServers() []pcsignaling.ICEServerConfig {
 
 func (m *mockSignalingClient) SetBridgeHandler(_ signaling.BridgeMessageHandler) {}
 
+func (m *mockSignalingClient) SetNotificationHandler(_ func(payload []byte)) {}
+
 func (m *mockSignalingClient) SetAgentID(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

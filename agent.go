@@ -13,7 +13,9 @@ import (
 	"github.com/peerclaw/peerclaw-agent/conn"
 	"github.com/peerclaw/peerclaw-agent/discovery"
 	"github.com/peerclaw/peerclaw-agent/filetransfer"
+	"github.com/peerclaw/peerclaw-agent/openclaw"
 	"github.com/peerclaw/peerclaw-agent/peer"
+	"github.com/peerclaw/peerclaw-agent/sdkversion"
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
 	"github.com/peerclaw/peerclaw-agent/transport"
@@ -35,6 +37,19 @@ type ConnectionRequest struct {
 // ConnectionRequestHandler is called when a non-whitelisted peer requests a connection.
 // Return true to allow, false to deny.
 type ConnectionRequestHandler func(ctx context.Context, req *ConnectionRequest) bool
+
+// NotificationPayload represents a notification pushed from the server via signaling.
+type NotificationPayload struct {
+	ID        string            `json:"id"`
+	UserID    string            `json:"user_id"`
+	AgentID   string            `json:"agent_id"`
+	Type      string            `json:"type"`
+	Severity  string            `json:"severity"`
+	Title     string            `json:"title"`
+	Body      string            `json:"body"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+}
 
 // Options configures an Agent.
 type Options struct {
@@ -104,6 +119,11 @@ type Options struct {
 	// (done, failed, or cancelled).
 	OnFileTransferComplete func(info filetransfer.TransferInfo)
 
+	// OpenClaw holds optional OpenClaw gateway integration settings.
+	// When set, the agent connects to OpenClaw and forwards P2P messages
+	// and server notifications to OpenClaw conversations.
+	OpenClaw *openclaw.Config
+
 	// SkipRegistration skips server registration on Start(). Use when the agent
 	// is already registered and you only need P2P connectivity.
 	SkipRegistration bool
@@ -132,8 +152,10 @@ type Agent struct {
 	pendingRequests    map[string]chan *envelope.Envelope // traceID → response channel
 	taskTracker        *TaskTracker
 	router             *Router
-	handler            MessageHandler
-	connRequestHandler ConnectionRequestHandler
+	handler              MessageHandler
+	connRequestHandler   ConnectionRequestHandler
+	notificationHandler  func(n *NotificationPayload)
+	openclawClient       *openclaw.Client
 	connManager        *conn.Manager
 	mailbox            *transport.Mailbox
 	fileTransfer       *filetransfer.Manager
@@ -374,6 +396,21 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.HandleIncomingEnvelope(context.Background(), &env)
 	})
 
+	// Set up notification handler for server notifications via signaling.
+	a.signaling.SetNotificationHandler(func(payload []byte) {
+		var n NotificationPayload
+		if err := json.Unmarshal(payload, &n); err != nil {
+			a.logger.Warn("invalid notification payload", "error", err)
+			return
+		}
+		a.mu.RLock()
+		handler := a.notificationHandler
+		a.mu.RUnlock()
+		if handler != nil {
+			handler(&n)
+		}
+	})
+
 	// Start connection orchestrator with connection gate.
 	x25519Pub, _ := a.keypair.X25519PublicKeyString()
 	a.connManager = conn.New(conn.Config{
@@ -499,6 +536,44 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	// Initialize OpenClaw gateway integration.
+	if a.opts.OpenClaw != nil {
+		oc := openclaw.NewClient(*a.opts.OpenClaw, a.agentID, a.opts.Name, sdkversion.Version, a.logger)
+		oc.SetOutboundHandler(func(sessionKey, text string) {
+			peerID := openclaw.ParsePeerFromSessionKey(sessionKey)
+			if peerID == "" {
+				return
+			}
+			env := envelope.New(a.agentID, peerID, "peerclaw", []byte(text))
+			_ = a.Send(context.Background(), env)
+		})
+		if err := oc.Connect(ctx); err != nil {
+			a.logger.Warn("openclaw connect failed", "error", err)
+		} else {
+			a.openclawClient = oc
+		}
+
+		// Forward notifications to OpenClaw.
+		if a.openclawClient != nil {
+			a.OnNotification(func(n *NotificationPayload) {
+				text := openclaw.FormatNotification(n.Severity, n.Title, n.Body)
+				_ = a.openclawClient.ChatInject(ctx, "peerclaw:notifications", text, "peerclaw-notification")
+			})
+		}
+
+		// Forward P2P messages to OpenClaw.
+		if a.openclawClient != nil {
+			prevHandler := a.handler
+			a.OnMessage(func(msgCtx context.Context, env *envelope.Envelope) {
+				sessionKey := openclaw.SessionKeyForPeer(env.Source)
+				_ = a.openclawClient.ChatSend(msgCtx, sessionKey, string(env.Payload))
+				if prevHandler != nil {
+					prevHandler(msgCtx, env)
+				}
+			})
+		}
+	}
+
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
 	return nil
 }
@@ -553,6 +628,11 @@ func (a *Agent) Stop(ctx context.Context) error {
 		if err := a.trustStore.SaveToFile(a.opts.TrustStorePath); err != nil {
 			a.logger.Warn("failed to save trust store", "error", err)
 		}
+	}
+
+	// Close OpenClaw gateway.
+	if a.openclawClient != nil {
+		a.openclawClient.Close()
 	}
 
 	// Close signaling and peers.
@@ -725,6 +805,13 @@ func (a *Agent) OnMessage(handler MessageHandler) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.handler = handler
+}
+
+// OnNotification registers a handler for server notifications pushed via signaling.
+func (a *Agent) OnNotification(handler func(n *NotificationPayload)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.notificationHandler = handler
 }
 
 // Handle registers a capability handler on the router.
