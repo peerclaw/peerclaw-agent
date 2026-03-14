@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/peerclaw/peerclaw-agent/sdkversion"
 	"github.com/peerclaw/peerclaw-core/agentcard"
 	"github.com/peerclaw/peerclaw-core/identity"
 )
@@ -62,6 +63,14 @@ type EndpointReq struct {
 
 // Register registers the agent with the platform.
 func (c *RegistryClient) Register(ctx context.Context, req RegisterRequest) (*agentcard.Card, error) {
+	// Auto-inject sdk_version if not explicitly set.
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if _, ok := req.Metadata["sdk_version"]; !ok {
+		req.Metadata["sdk_version"] = sdkversion.Version
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal register request: %w", err)
@@ -118,7 +127,10 @@ type HeartbeatResponse struct {
 
 // Heartbeat sends a heartbeat to the platform.
 func (c *RegistryClient) Heartbeat(ctx context.Context, agentID string, status string) (*HeartbeatResponse, error) {
-	body, _ := json.Marshal(map[string]string{"status": status})
+	body, _ := json.Marshal(map[string]any{
+		"status":   status,
+		"metadata": map[string]string{"sdk_version": sdkversion.Version},
+	})
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/agents/"+agentID+"/heartbeat", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
