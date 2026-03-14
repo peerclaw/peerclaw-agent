@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/peerclaw/peerclaw-agent/filetransfer"
 	"github.com/peerclaw/peerclaw-agent/peer"
 	"github.com/peerclaw/peerclaw-agent/platform"
+	"github.com/peerclaw/peerclaw-agent/sdkversion"
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
 	"github.com/peerclaw/peerclaw-agent/transport"
@@ -165,6 +167,7 @@ type Agent struct {
 	logger             *slog.Logger
 	mu                 sync.RWMutex
 	running            bool
+	versionWarned      sync.Once
 	stopNonceCleaner   context.CancelFunc
 }
 
@@ -306,6 +309,15 @@ func (a *Agent) Start(ctx context.Context) error {
 		// Derive agent ID from public key without server registration.
 		a.agentID = a.keypair.PublicKeyString()
 	} else {
+		// Build platform metadata for registration.
+		var regMeta map[string]string
+		if a.opts.Platform != nil {
+			regMeta = map[string]string{
+				"platform_name":     a.opts.Platform.Name(),
+				"platform_protocol": strconv.Itoa(a.opts.Platform.ProtocolVersion()),
+			}
+		}
+
 		// Register with the platform.
 		var regErr error
 		if a.opts.ClaimToken != "" {
@@ -326,6 +338,7 @@ func (a *Agent) Start(ctx context.Context) error {
 				Protocols:    a.opts.Protocols,
 				Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
 				Signature:    sig,
+				Metadata:     regMeta,
 			})
 			if err != nil {
 				regErr = fmt.Errorf("claim register: %w", err)
@@ -340,6 +353,7 @@ func (a *Agent) Start(ctx context.Context) error {
 				Capabilities: a.Capabilities(),
 				Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
 				Protocols:    a.opts.Protocols,
+				Metadata:     regMeta,
 			})
 			if err != nil {
 				regErr = fmt.Errorf("register with platform: %w", err)
@@ -538,6 +552,18 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Initialize platform adapter integration.
 	if a.opts.Platform != nil {
 		pa := a.opts.Platform
+
+		// Verify adapter protocol compatibility before connecting.
+		if err := platform.CheckProtocolVersion(pa); err != nil {
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+			return fmt.Errorf("platform compatibility: %w", err)
+		}
+
+		// Advisory check: warn if SDK is outside adapter's declared compat range.
+		platform.CheckSDKCompat(pa, a.logger)
+
 		pa.SetOutboundHandler(func(sessionKey, text string) {
 			peerID := platform.ParsePeerFromSessionKey(sessionKey)
 			if peerID == "" {
@@ -550,6 +576,17 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.logger.Warn("platform connect failed", "platform", pa.Name(), "error", err)
 		} else {
 			a.platformAdapter = pa
+
+			// Log platform adapter compatibility summary.
+			attrs := []any{
+				"platform", pa.Name(),
+				"protocol_version", pa.ProtocolVersion(),
+				"sdk_version", sdkversion.Version,
+			}
+			if v, ok := pa.(platform.Versioned); ok {
+				attrs = append(attrs, "plugin_version", v.PluginVersion())
+			}
+			a.logger.Info("platform adapter connected", attrs...)
 		}
 
 		// Forward notifications to platform.
@@ -571,6 +608,11 @@ func (a *Agent) Start(ctx context.Context) error {
 				}
 			})
 		}
+	}
+
+	// Check for SDK updates in the background.
+	if !a.opts.SkipRegistration {
+		go a.checkForUpdates(ctx)
 	}
 
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
@@ -640,6 +682,27 @@ func (a *Agent) Stop(ctx context.Context) error {
 
 	a.logger.Info("agent stopped", "id", a.agentID)
 	return nil
+}
+
+// checkForUpdates sends a heartbeat and logs a warning if a newer SDK is available.
+func (a *Agent) checkForUpdates(ctx context.Context) {
+	regClient, ok := a.discovery.(*discovery.RegistryClient)
+	if !ok {
+		return
+	}
+	resp, err := regClient.Heartbeat(ctx, a.agentID, "online")
+	if err != nil {
+		return
+	}
+	if resp.VersionAdvisory != nil && resp.VersionAdvisory.SDKUpdateAvailable {
+		a.versionWarned.Do(func() {
+			a.logger.Warn("a newer PeerClaw SDK is available",
+				"current", sdkversion.Version,
+				"latest", resp.VersionAdvisory.LatestSDK,
+				"release_url", resp.VersionAdvisory.ReleaseURL,
+			)
+		})
+	}
 }
 
 // Send sends an envelope to a peer using P2P (preferred) or signaling relay (fallback).

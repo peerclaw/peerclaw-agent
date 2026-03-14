@@ -48,6 +48,9 @@ func NewAdapter(cfg Config, agentID string, logger *slog.Logger) *Adapter {
 // Name returns "ironclaw".
 func (a *Adapter) Name() string { return "ironclaw" }
 
+// ProtocolVersion returns the bridge protocol version.
+func (a *Adapter) ProtocolVersion() int { return 1 }
+
 // SetOutboundHandler registers a handler called when IronClaw produces a final AI response.
 func (a *Adapter) SetOutboundHandler(handler platform.OutboundHandler) {
 	a.mu.Lock()

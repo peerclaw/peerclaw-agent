@@ -51,6 +51,15 @@ func NewAdapter(cfg Config, agentID, agentName, version string, logger *slog.Log
 // Name returns "openclaw".
 func (a *Adapter) Name() string { return "openclaw" }
 
+// ProtocolVersion returns the bridge protocol version.
+func (a *Adapter) ProtocolVersion() int { return 1 }
+
+// PluginVersion returns the adapter's version string.
+func (a *Adapter) PluginVersion() string { return a.version }
+
+// SDKCompatRange returns the minimum SDK version this adapter is tested against.
+func (a *Adapter) SDKCompatRange() (string, string) { return "0.8.0", "" }
+
 // SetOutboundHandler registers a handler called when OpenClaw produces a final AI response.
 func (a *Adapter) SetOutboundHandler(handler platform.OutboundHandler) {
 	a.mu.Lock()

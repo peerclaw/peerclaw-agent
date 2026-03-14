@@ -120,10 +120,18 @@ func (c *RegistryClient) Deregister(ctx context.Context, agentID string) error {
 	return nil
 }
 
+// VersionAdvisory is returned in heartbeat responses when a newer SDK version is available.
+type VersionAdvisory struct {
+	SDKUpdateAvailable bool   `json:"sdk_update_available,omitempty"`
+	LatestSDK          string `json:"latest_sdk,omitempty"`
+	ReleaseURL         string `json:"release_url,omitempty"`
+}
+
 // HeartbeatResponse holds the response from a heartbeat request.
 type HeartbeatResponse struct {
-	NextDeadline         time.Time `json:"next_deadline"`
-	PendingNotifications int       `json:"pending_notifications,omitempty"`
+	NextDeadline         time.Time        `json:"next_deadline"`
+	PendingNotifications int              `json:"pending_notifications,omitempty"`
+	VersionAdvisory      *VersionAdvisory `json:"version_advisory,omitempty"`
 }
 
 // Heartbeat sends a heartbeat to the platform.
@@ -222,6 +230,14 @@ type ClaimRequest struct {
 // ClaimRegister registers the agent using a claim token.
 // The token itself serves as authentication — no API key or bearer token is needed.
 func (c *RegistryClient) ClaimRegister(ctx context.Context, req ClaimRequest) (*agentcard.Card, error) {
+	// Auto-inject sdk_version if not explicitly set.
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if _, ok := req.Metadata["sdk_version"]; !ok {
+		req.Metadata["sdk_version"] = sdkversion.Version
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal claim request: %w", err)

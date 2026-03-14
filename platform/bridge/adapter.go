@@ -42,6 +42,9 @@ func NewAdapter(cfg Config, logger *slog.Logger) *Adapter {
 // Name returns "bridge".
 func (a *Adapter) Name() string { return "bridge" }
 
+// ProtocolVersion returns the bridge protocol version.
+func (a *Adapter) ProtocolVersion() int { return 1 }
+
 // SetOutboundHandler registers a handler called when the platform produces a final AI response.
 func (a *Adapter) SetOutboundHandler(handler platform.OutboundHandler) {
 	a.mu.Lock()
