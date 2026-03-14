@@ -46,6 +46,17 @@ P2P Agent SDK for the [PeerClaw](https://github.com/peerclaw/peerclaw) identity 
 └───────────────────────────────────────┘
 ```
 
+## Multi-Platform Support
+
+The agent SDK defines a `platform.Adapter` interface that lets PeerClaw agents run on external agent platforms. Four official platform plugins are available:
+
+- [**openclaw-plugin**](https://github.com/peerclaw/openclaw-plugin) — OpenClaw (TypeScript, WebSocket)
+- [**ironclaw-plugin**](https://github.com/peerclaw/ironclaw-plugin) — IronClaw (Rust WASM, HTTP/SSE)
+- [**picoclaw-plugin**](https://github.com/peerclaw/picoclaw-plugin) — PicoClaw (Go, native)
+- [**nanobot-plugin**](https://github.com/peerclaw/nanobot-plugin) — NanoBot (Python)
+
+See each plugin's README for configuration and usage details.
+
 ## Quick Start
 
 ### Full Echo Agent Example

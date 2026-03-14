@@ -46,6 +46,17 @@
 └───────────────────────────────────────┘
 ```
 
+## 多平台支持
+
+Agent SDK 定义了 `platform.Adapter` 接口，让 PeerClaw Agent 可以在外部 Agent 平台上运行。提供 4 个官方平台插件：
+
+- [**openclaw-plugin**](https://github.com/peerclaw/openclaw-plugin) — OpenClaw（TypeScript, WebSocket）
+- [**ironclaw-plugin**](https://github.com/peerclaw/ironclaw-plugin) — IronClaw（Rust WASM, HTTP/SSE）
+- [**picoclaw-plugin**](https://github.com/peerclaw/picoclaw-plugin) — PicoClaw（Go, 原生）
+- [**nanobot-plugin**](https://github.com/peerclaw/nanobot-plugin) — NanoBot（Python）
+
+各插件的配置和使用详情请参阅对应 README。
+
 ## 快速开始
 
 ### Echo Agent 完整示例
