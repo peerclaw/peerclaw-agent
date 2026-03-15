@@ -20,6 +20,7 @@ import (
 	"github.com/peerclaw/peerclaw-agent/security"
 	pcsignaling "github.com/peerclaw/peerclaw-agent/signaling"
 	"github.com/peerclaw/peerclaw-agent/transport"
+	"github.com/peerclaw/peerclaw-core/agentcard"
 	"github.com/peerclaw/peerclaw-core/envelope"
 	"github.com/peerclaw/peerclaw-core/identity"
 	pccoresignaling "github.com/peerclaw/peerclaw-core/signaling"
@@ -119,6 +120,12 @@ type Options struct {
 	// OnFileTransferComplete is called when a file transfer reaches a terminal state
 	// (done, failed, or cancelled).
 	OnFileTransferComplete func(info filetransfer.TransferInfo)
+
+	// HealthCheck is an optional callback invoked before each heartbeat to
+	// determine the agent's current status. It runs with a 5-second timeout.
+	// If nil, the SDK reports "online" on every heartbeat.
+	// If the callback panics or times out, the SDK sends "degraded".
+	HealthCheck func(ctx context.Context) agentcard.AgentStatus
 
 	// Platform is an optional AI orchestration platform adapter.
 	// When set, the agent forwards P2P messages and server notifications
@@ -716,9 +723,66 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// HealthCheckTimeout is the maximum time allowed for a HealthCheck callback.
+const HealthCheckTimeout = 5 * time.Second
+
+// evaluateHealth determines the agent's current status by consulting the
+// user-provided HealthCheck callback and (if present) the platform adapter's
+// HealthChecker interface.
+func (a *Agent) evaluateHealth(ctx context.Context) agentcard.AgentStatus {
+	userStatus := agentcard.StatusOnline
+
+	if a.opts.HealthCheck != nil {
+		hctx, cancel := context.WithTimeout(ctx, HealthCheckTimeout)
+		defer cancel()
+
+		ch := make(chan agentcard.AgentStatus, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.logger.Error("HealthCheck panicked", "recover", r)
+					ch <- agentcard.StatusDegraded
+				}
+			}()
+			ch <- a.opts.HealthCheck(hctx)
+		}()
+
+		select {
+		case s := <-ch:
+			userStatus = s
+		case <-hctx.Done():
+			a.logger.Warn("HealthCheck timed out")
+			userStatus = agentcard.StatusDegraded
+		}
+	}
+
+	// If the user says offline, honour it immediately.
+	if userStatus == agentcard.StatusOffline {
+		return agentcard.StatusOffline
+	}
+
+	// Check platform adapter health if it implements HealthChecker.
+	if a.platformAdapter != nil {
+		if hc, ok := a.platformAdapter.(platform.HealthChecker); ok {
+			ahctx, acancel := context.WithTimeout(ctx, HealthCheckTimeout)
+			defer acancel()
+			if err := hc.HealthCheck(ahctx); err != nil {
+				a.logger.Warn("platform adapter health check failed",
+					"adapter", a.platformAdapter.Name(), "error", err)
+				if userStatus == agentcard.StatusOnline {
+					return agentcard.StatusDegraded
+				}
+			}
+		}
+	}
+
+	return userStatus
+}
+
 // sendHeartbeat sends a single heartbeat and processes the server response.
 func (a *Agent) sendHeartbeat(ctx context.Context, regClient *discovery.RegistryClient) {
-	resp, err := regClient.Heartbeat(ctx, a.agentID, "online")
+	status := string(a.evaluateHealth(ctx))
+	resp, err := regClient.Heartbeat(ctx, a.agentID, status)
 	if err != nil {
 		a.logger.Debug("heartbeat failed", "error", err)
 		return

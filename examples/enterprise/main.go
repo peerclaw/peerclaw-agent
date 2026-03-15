@@ -1,25 +1,44 @@
-// Enterprise example: minimal intranet agent setup using NewSimple + ImportContacts.
+// Enterprise example: intranet agent with health check + ImportContacts.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	agent "github.com/peerclaw/peerclaw-agent"
+	"github.com/peerclaw/peerclaw-core/agentcard"
 	"github.com/peerclaw/peerclaw-core/envelope"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	// 1. Create agent with minimal config — just name, server URL, and capabilities.
-	a, err := agent.NewSimple("invoice-processor", "http://peerclaw.internal:8080",
-		"process-invoice", "query-status",
-	)
+	// 1. Create agent with health check — heartbeat reports real status.
+	a, err := agent.New(agent.Options{
+		Name:         "invoice-processor",
+		ServerURL:    "http://peerclaw.internal:8080",
+		Capabilities: []string{"process-invoice", "query-status"},
+		HealthCheck: func(ctx context.Context) agentcard.AgentStatus {
+			// Check an internal dependency (e.g., billing API).
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+				"http://billing.internal:9090/healthz", nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return agentcard.StatusDegraded
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return agentcard.StatusDegraded
+			}
+			return agentcard.StatusOnline
+		},
+		Logger: logger,
+	})
 	if err != nil {
 		logger.Error("failed to create agent", "error", err)
 		os.Exit(1)

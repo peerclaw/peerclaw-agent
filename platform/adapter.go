@@ -60,6 +60,13 @@ func CheckProtocolVersion(adapter Adapter) error {
 	return nil
 }
 
+// HealthChecker is an optional interface that adapters may implement to report
+// platform connection health. When implemented, the SDK checks adapter health
+// before each heartbeat and may downgrade the reported status to "degraded".
+type HealthChecker interface {
+	HealthCheck(ctx context.Context) error
+}
+
 // Versioned is an optional interface that adapters may implement to declare
 // their plugin version and SDK compatibility range. If implemented, the SDK
 // logs a warning when it falls outside the adapter's declared range.
