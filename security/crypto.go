@@ -3,21 +3,32 @@ package security
 import (
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"io"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
-	"crypto/sha256"
 )
 
 // HKDFSaltSize is the size of the random salt used for HKDF key derivation.
 const HKDFSaltSize = 32
 
+// Default rekey parameters.
+const (
+	DefaultRekeyAfter = uint64(1000)        // rekey after N messages
+	DefaultRekeyTTL   = 1 * time.Hour       // rekey after this duration
+)
+
 // SessionKey holds the derived symmetric key for encrypting messages between two peers.
 type SessionKey struct {
-	key     []byte // 32-byte symmetric key
-	peerID  string // the remote peer's identifier
+	key        []byte        // 32-byte symmetric key
+	peerID     string        // the remote peer's identifier
+	msgCount   uint64        // messages encrypted with this key
+	createdAt  time.Time     // when this key was derived
+	rekeyAfter uint64        // rekey threshold (message count)
+	rekeyTTL   time.Duration // rekey threshold (time)
 }
 
 // DeriveSessionKey computes a shared secret via X25519 ECDH and derives a
@@ -50,7 +61,13 @@ func DeriveSessionKey(privateKey *ecdh.PrivateKey, peerPublicKey *ecdh.PublicKey
 		return nil, nil, fmt.Errorf("HKDF derive: %w", err)
 	}
 
-	return &SessionKey{key: key, peerID: peerID}, hkdfSalt, nil
+	return &SessionKey{
+		key:        key,
+		peerID:     peerID,
+		createdAt:  time.Now(),
+		rekeyAfter: DefaultRekeyAfter,
+		rekeyTTL:   DefaultRekeyTTL,
+	}, hkdfSalt, nil
 }
 
 // DeriveSessionSalt produces a deterministic 32-byte salt from two public keys.
@@ -78,7 +95,13 @@ func NewSessionKeyFromBytes(key []byte, peerID string) (*SessionKey, error) {
 	}
 	keyCopy := make([]byte, chacha20poly1305.KeySize)
 	copy(keyCopy, key)
-	return &SessionKey{key: keyCopy, peerID: peerID}, nil
+	return &SessionKey{
+		key:        keyCopy,
+		peerID:     peerID,
+		createdAt:  time.Now(),
+		rekeyAfter: DefaultRekeyAfter,
+		rekeyTTL:   DefaultRekeyTTL,
+	}, nil
 }
 
 // PeerID returns the remote peer identifier associated with this session key.
@@ -146,4 +169,33 @@ func (sk *SessionKey) DecryptWithAAD(data, aad []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
 	return plaintext, nil
+}
+
+// NeedsRekey returns true if this session key has exceeded its message count
+// or time-to-live threshold and should be replaced.
+func (sk *SessionKey) NeedsRekey() bool {
+	if sk.rekeyAfter > 0 && sk.msgCount >= sk.rekeyAfter {
+		return true
+	}
+	if sk.rekeyTTL > 0 && time.Since(sk.createdAt) >= sk.rekeyTTL {
+		return true
+	}
+	return false
+}
+
+// IncrementCount increments the message counter for this session key.
+func (sk *SessionKey) IncrementCount() {
+	sk.msgCount++
+}
+
+// MsgCount returns the number of messages encrypted with this key.
+func (sk *SessionKey) MsgCount() uint64 {
+	return sk.msgCount
+}
+
+// Zero overwrites the key bytes with zeroes, destroying the key material.
+func (sk *SessionKey) Zero() {
+	for i := range sk.key {
+		sk.key[i] = 0
+	}
 }

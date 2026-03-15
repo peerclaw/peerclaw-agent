@@ -1,12 +1,19 @@
 package security
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/hkdf"
 )
 
 // TrustLevel represents how much an agent is trusted.
@@ -93,12 +100,26 @@ func ValidTrustTransition(from, to TrustLevel) bool {
 	}
 }
 
+// trustStoreMagic is the 4-byte magic header identifying encrypted trust store files.
+var trustStoreMagic = []byte("PCTS")
+
+// DeriveStoreKey derives a 32-byte encryption key from an Ed25519 seed using HKDF.
+func DeriveStoreKey(seed []byte) ([]byte, error) {
+	key := make([]byte, chacha20poly1305.KeySize)
+	r := hkdf.New(sha256.New, seed, []byte("peerclaw-trust-store-v1"), nil)
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, fmt.Errorf("derive store key: %w", err)
+	}
+	return key, nil
+}
+
 // TrustStore manages TOFU trust relationships with peers.
 type TrustStore struct {
 	mu              sync.RWMutex
 	trusted         map[string]TrustEntry // public key -> entry
 	onTrustChange   TrustChangeCallback
 	reputationStore *ReputationStore
+	encryptionKey   []byte // 32-byte XChaCha20-Poly1305 key (nil = plaintext mode)
 }
 
 // NewTrustStore creates a new empty trust store.
@@ -106,6 +127,15 @@ func NewTrustStore() *TrustStore {
 	return &TrustStore{
 		trusted: make(map[string]TrustEntry),
 	}
+}
+
+// SetEncryptionKey sets the XChaCha20-Poly1305 key used for encrypting the
+// trust store file. When set, SaveToFile encrypts and LoadFromFile decrypts.
+// Pass nil to disable encryption.
+func (ts *TrustStore) SetEncryptionKey(key []byte) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.encryptionKey = key
 }
 
 // OnTrustChange registers a callback invoked when trust levels change.
@@ -317,7 +347,9 @@ func (ts *TrustStore) Import(data []byte) error {
 	return nil
 }
 
-// LoadFromFile loads the trust store from a JSON file.
+// LoadFromFile loads the trust store from a file. If an encryption key is set,
+// it attempts to decrypt the file first. If decryption fails, it falls back to
+// reading as plaintext JSON for smooth migration from unencrypted stores.
 func (ts *TrustStore) LoadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -330,24 +362,79 @@ func (ts *TrustStore) LoadFromFile(path string) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
+	// Try encrypted format: magic (4) || nonce (24) || ciphertext || tag (16).
+	if ts.encryptionKey != nil && len(data) >= 4 && bytes.Equal(data[:4], trustStoreMagic) {
+		plaintext, decErr := ts.decryptData(data[4:])
+		if decErr != nil {
+			return fmt.Errorf("decrypt trust store: %w", decErr)
+		}
+		return json.Unmarshal(plaintext, &ts.trusted)
+	}
+
+	// Fallback: try plaintext JSON (migration path).
 	return json.Unmarshal(data, &ts.trusted)
 }
 
-// SaveToFile persists the trust store to a JSON file using atomic write
+// SaveToFile persists the trust store to a file using atomic write
 // (write to temp file, then rename) to prevent corruption on crash.
+// If an encryption key is set, the file is encrypted with XChaCha20-Poly1305.
 func (ts *TrustStore) SaveToFile(path string) error {
 	ts.mu.RLock()
-	data, err := json.MarshalIndent(ts.trusted, "", "  ")
+	jsonData, err := json.MarshalIndent(ts.trusted, "", "  ")
+	encKey := ts.encryptionKey
 	ts.mu.RUnlock()
 
 	if err != nil {
 		return fmt.Errorf("marshal trust store: %w", err)
 	}
+
+	var output []byte
+	if encKey != nil {
+		encrypted, encErr := ts.encryptDataWithKey(jsonData, encKey)
+		if encErr != nil {
+			return fmt.Errorf("encrypt trust store: %w", encErr)
+		}
+		// Prepend magic header.
+		output = make([]byte, 0, 4+len(encrypted))
+		output = append(output, trustStoreMagic...)
+		output = append(output, encrypted...)
+	} else {
+		output = jsonData
+	}
+
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	if err := os.WriteFile(tmp, output, 0600); err != nil {
 		return fmt.Errorf("write trust store temp: %w", err)
 	}
 	return os.Rename(tmp, path)
+}
+
+// decryptData decrypts XChaCha20-Poly1305 data: nonce (24) || ciphertext || tag.
+func (ts *TrustStore) decryptData(data []byte) ([]byte, error) {
+	cipher, err := chacha20poly1305.NewX(ts.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("create cipher: %w", err)
+	}
+	nonceSize := cipher.NonceSize()
+	if len(data) < nonceSize+cipher.Overhead() {
+		return nil, fmt.Errorf("encrypted data too short: %d bytes", len(data))
+	}
+	nonce := data[:nonceSize]
+	ciphertext := data[nonceSize:]
+	return cipher.Open(nil, nonce, ciphertext, nil)
+}
+
+// encryptDataWithKey encrypts plaintext using XChaCha20-Poly1305: nonce (24) || ciphertext || tag.
+func (ts *TrustStore) encryptDataWithKey(plaintext, key []byte) ([]byte, error) {
+	cipher, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, fmt.Errorf("create cipher: %w", err)
+	}
+	nonce := make([]byte, cipher.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
+	return cipher.Seal(nonce, nonce, plaintext, nil), nil
 }
 
 // SetReputationStore associates a ReputationStore with this TrustStore.

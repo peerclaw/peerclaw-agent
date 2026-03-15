@@ -256,8 +256,13 @@ func New(opts Options) (*Agent, error) {
 		}
 	}
 
-	// Initialize trust store.
+	// Initialize trust store with encryption from keypair seed.
 	ts := security.NewTrustStore()
+	storeKey, err := security.DeriveStoreKey(kp.PrivateKey.Seed())
+	if err != nil {
+		return nil, fmt.Errorf("derive trust store key: %w", err)
+	}
+	ts.SetEncryptionKey(storeKey)
 	if opts.TrustStorePath != "" {
 		if err := ts.LoadFromFile(opts.TrustStorePath); err != nil {
 			return nil, fmt.Errorf("load trust store: %w", err)
@@ -875,6 +880,7 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 	a.mu.RUnlock()
 
 	if sk != nil {
+		sk.IncrementCount()
 		aad := envelopeAAD(env)
 		encrypted, err := sk.EncryptWithAAD(env.Payload, aad)
 		if err != nil {
@@ -887,6 +893,11 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 			return fmt.Errorf("get X25519 public key: %w", err)
 		}
 		env.SenderX25519 = x25519Pub
+
+		// Trigger rekey if thresholds exceeded.
+		if sk.NeedsRekey() {
+			go a.initiateRekey(env.Destination)
+		}
 	}
 
 	// Step 2: Sign the full envelope. When encrypted, the signature covers
@@ -1165,6 +1176,24 @@ func (a *Agent) HandleIncomingEnvelope(ctx context.Context, env *envelope.Envelo
 	// Update trust store last seen.
 	if env.Source != "" {
 		a.trustStore.TouchLastSeen(env.Source)
+	}
+
+	// Handle rekey protocol messages.
+	if env.MessageType == envelope.MessageTypeRekey {
+		a.handleRekey(ctx, env)
+		return
+	}
+	if env.MessageType == envelope.MessageTypeRekeyResponse && env.TraceID != "" {
+		a.mu.RLock()
+		ch, ok := a.pendingRequests[env.TraceID]
+		a.mu.RUnlock()
+		if ok {
+			select {
+			case ch <- env:
+			default:
+			}
+		}
+		return
 	}
 
 	// Intercept responses for pending synchronous requests.
@@ -1472,4 +1501,128 @@ func (a *Agent) Discover(ctx context.Context, capabilities []string) ([]*discove
 		}
 	}
 	return results, nil
+}
+
+// rekeyPayload carries an ephemeral X25519 public key for the rekey protocol.
+type rekeyPayload struct {
+	X25519PublicKey string `json:"x25519_public_key"`
+}
+
+// initiateRekey starts a rekey handshake with the given peer.
+// It generates a new ephemeral X25519 keypair, sends a rekey message,
+// waits for the response, and derives a new session key.
+func (a *Agent) initiateRekey(peerID string) {
+	a.logger.Info("initiating session rekey", "peer", peerID)
+
+	// Generate ephemeral X25519 keypair.
+	ephKP, err := identity.GenerateKeypair()
+	if err != nil {
+		a.logger.Error("rekey: generate ephemeral keypair", "error", err)
+		return
+	}
+	ephX25519Priv, err := ephKP.X25519PrivateKey()
+	if err != nil {
+		a.logger.Error("rekey: derive X25519 private key", "error", err)
+		return
+	}
+	ephX25519PubStr := ephKP.PublicKeyString()
+
+	payload, _ := json.Marshal(rekeyPayload{X25519PublicKey: ephX25519PubStr})
+	env := envelope.New(a.agentID, peerID, "peerclaw", payload)
+	env.MessageType = envelope.MessageTypeRekey
+
+	resp, err := a.SendRequest(context.Background(), env, 30*time.Second)
+	if err != nil {
+		a.logger.Error("rekey: send request failed", "peer", peerID, "error", err)
+		return
+	}
+
+	// Parse peer's ephemeral public key from response.
+	var respPayload rekeyPayload
+	if err := json.Unmarshal(resp.Payload, &respPayload); err != nil {
+		a.logger.Error("rekey: unmarshal response", "error", err)
+		return
+	}
+
+	peerX25519Pub, err := identity.ParseX25519PublicKey(respPayload.X25519PublicKey)
+	if err != nil {
+		a.logger.Error("rekey: parse peer X25519 key", "error", err)
+		return
+	}
+
+	// Derive new session key.
+	salt := security.DeriveSessionSalt(ephX25519Priv.PublicKey().Bytes(), peerX25519Pub.Bytes())
+	newSK, _, err := security.DeriveSessionKey(ephX25519Priv, peerX25519Pub, peerID, salt)
+	if err != nil {
+		a.logger.Error("rekey: derive session key", "error", err)
+		return
+	}
+
+	// Replace session key and zero old one.
+	a.mu.Lock()
+	oldSK := a.sessionKeys[peerID]
+	a.sessionKeys[peerID] = newSK
+	a.mu.Unlock()
+
+	if oldSK != nil {
+		oldSK.Zero()
+	}
+	a.logger.Info("session rekey completed (initiator)", "peer", peerID)
+}
+
+// handleRekey responds to an incoming rekey request from a peer.
+func (a *Agent) handleRekey(ctx context.Context, env *envelope.Envelope) {
+	a.logger.Info("handling incoming rekey", "from", env.Source)
+
+	var reqPayload rekeyPayload
+	if err := json.Unmarshal(env.Payload, &reqPayload); err != nil {
+		a.logger.Error("rekey: unmarshal request", "error", err)
+		return
+	}
+
+	peerX25519Pub, err := identity.ParseX25519PublicKey(reqPayload.X25519PublicKey)
+	if err != nil {
+		a.logger.Error("rekey: parse peer X25519 key", "error", err)
+		return
+	}
+
+	// Generate our own ephemeral X25519 keypair.
+	ephKP, err := identity.GenerateKeypair()
+	if err != nil {
+		a.logger.Error("rekey: generate ephemeral keypair", "error", err)
+		return
+	}
+	ephX25519Priv, err := ephKP.X25519PrivateKey()
+	if err != nil {
+		a.logger.Error("rekey: derive X25519 private key", "error", err)
+		return
+	}
+
+	// Derive new session key.
+	salt := security.DeriveSessionSalt(ephX25519Priv.PublicKey().Bytes(), peerX25519Pub.Bytes())
+	newSK, _, err := security.DeriveSessionKey(ephX25519Priv, peerX25519Pub, env.Source, salt)
+	if err != nil {
+		a.logger.Error("rekey: derive session key", "error", err)
+		return
+	}
+
+	// Send response with our ephemeral public key.
+	respPayload, _ := json.Marshal(rekeyPayload{X25519PublicKey: ephKP.PublicKeyString()})
+	resp := envelope.NewResponse(env, respPayload)
+	resp.MessageType = envelope.MessageTypeRekeyResponse
+	if err := a.Send(ctx, resp); err != nil {
+		a.logger.Error("rekey: send response failed", "error", err)
+		return
+	}
+
+	// Replace session key and zero old one.
+	a.mu.Lock()
+	oldSK := a.sessionKeys[env.Source]
+	a.sessionKeys[env.Source] = newSK
+	a.mu.Unlock()
+
+	if oldSK != nil {
+		oldSK.Zero()
+	}
+	a.logger.Info("session rekey completed (responder)", "peer", env.Source)
 }
