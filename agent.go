@@ -263,6 +263,10 @@ func New(opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("derive trust store key: %w", err)
 	}
 	ts.SetEncryptionKey(storeKey)
+	// Zero derived key material — SetEncryptionKey copies internally.
+	for i := range storeKey {
+		storeKey[i] = 0
+	}
 	if opts.TrustStorePath != "" {
 		if err := ts.LoadFromFile(opts.TrustStorePath); err != nil {
 			return nil, fmt.Errorf("load trust store: %w", err)
@@ -1334,10 +1338,13 @@ func (a *Agent) SendContactRequest(ctx context.Context, targetAgentID, message s
 	}
 
 	// Fallback: P2P envelope with contact_request metadata.
-	payload, _ := json.Marshal(map[string]string{
+	payload, err := json.Marshal(map[string]string{
 		"type":    "contact_request",
 		"message": message,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal contact request payload: %w", err)
+	}
 	env := envelope.New(a.agentID, targetAgentID, "peerclaw", payload)
 	env.WithMetadata("peerclaw.type", "contact_request")
 	if err := a.Send(ctx, env); err != nil {
@@ -1527,7 +1534,11 @@ func (a *Agent) initiateRekey(peerID string) {
 	}
 	ephX25519PubStr := ephKP.PublicKeyString()
 
-	payload, _ := json.Marshal(rekeyPayload{X25519PublicKey: ephX25519PubStr})
+	payload, err := json.Marshal(rekeyPayload{X25519PublicKey: ephX25519PubStr})
+	if err != nil {
+		a.logger.Error("rekey: marshal payload failed", "error", err)
+		return
+	}
 	env := envelope.New(a.agentID, peerID, "peerclaw", payload)
 	env.MessageType = envelope.MessageTypeRekey
 
@@ -1607,7 +1618,11 @@ func (a *Agent) handleRekey(ctx context.Context, env *envelope.Envelope) {
 	}
 
 	// Send response with our ephemeral public key.
-	respPayload, _ := json.Marshal(rekeyPayload{X25519PublicKey: ephKP.PublicKeyString()})
+	respPayload, err := json.Marshal(rekeyPayload{X25519PublicKey: ephKP.PublicKeyString()})
+	if err != nil {
+		a.logger.Error("rekey: marshal response payload failed", "error", err)
+		return
+	}
 	resp := envelope.NewResponse(env, respPayload)
 	resp.MessageType = envelope.MessageTypeRekeyResponse
 	if err := a.Send(ctx, resp); err != nil {
