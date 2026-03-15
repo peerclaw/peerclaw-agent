@@ -423,6 +423,16 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.logger.Warn("invalid notification payload", "error", err)
 			return
 		}
+
+		// Handle re_register notification from server (e.g. after server restart).
+		if n.Type == "re_register" {
+			a.logger.Info("received re-register notification from server")
+			if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
+				a.reregister(ctx, regClient)
+			}
+			return
+		}
+
 		a.mu.RLock()
 		handler := a.notificationHandler
 		a.mu.RUnlock()
@@ -779,12 +789,42 @@ func (a *Agent) evaluateHealth(ctx context.Context) agentcard.AgentStatus {
 	return userStatus
 }
 
+// reregister attempts to re-register the agent with the server.
+// This is called when the server has lost the agent record (e.g. after a restart).
+func (a *Agent) reregister(ctx context.Context, regClient *discovery.RegistryClient) {
+	var regMeta map[string]string
+	if a.platformAdapter != nil {
+		regMeta = map[string]string{
+			"platform_name":     a.platformAdapter.Name(),
+			"platform_protocol": strconv.Itoa(a.platformAdapter.ProtocolVersion()),
+		}
+	}
+	card, err := regClient.Register(ctx, discovery.RegisterRequest{
+		Name:         a.opts.Name,
+		PublicKey:    a.keypair.PublicKeyString(),
+		Capabilities: a.Capabilities(),
+		Endpoint:     discovery.EndpointReq{URL: "p2p://" + a.keypair.PublicKeyString()},
+		Protocols:    a.opts.Protocols,
+		Metadata:     regMeta,
+	})
+	if err != nil {
+		a.logger.Error("re-register failed", "error", err)
+		return
+	}
+	a.logger.Info("re-registered with server", "id", card.ID)
+}
+
 // sendHeartbeat sends a single heartbeat and processes the server response.
 func (a *Agent) sendHeartbeat(ctx context.Context, regClient *discovery.RegistryClient) {
 	status := string(a.evaluateHealth(ctx))
 	resp, err := regClient.Heartbeat(ctx, a.agentID, status)
 	if err != nil {
-		a.logger.Debug("heartbeat failed", "error", err)
+		if discovery.IsNotFound(err) {
+			a.logger.Warn("agent not found on server, attempting re-register")
+			a.reregister(ctx, regClient)
+		} else {
+			a.logger.Debug("heartbeat failed", "error", err)
+		}
 		return
 	}
 	if resp.VersionAdvisory != nil && resp.VersionAdvisory.SDKUpdateAvailable {

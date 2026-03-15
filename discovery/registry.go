@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -457,7 +458,23 @@ func (c *RegistryClient) Close() error {
 	return nil
 }
 
+// RegistryError is a structured error returned by the registry server.
+type RegistryError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *RegistryError) Error() string {
+	return fmt.Sprintf("server returned %d: %s", e.StatusCode, e.Body)
+}
+
+// IsNotFound returns true if the error is a 404 from the registry server.
+func IsNotFound(err error) bool {
+	var re *RegistryError
+	return errors.As(err, &re) && re.StatusCode == http.StatusNotFound
+}
+
 func (c *RegistryClient) readError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	return &RegistryError{StatusCode: resp.StatusCode, Body: string(body)}
 }
