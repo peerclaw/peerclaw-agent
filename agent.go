@@ -610,9 +610,9 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
-	// Check for SDK updates in the background.
+	// Start periodic heartbeat loop.
 	if !a.opts.SkipRegistration {
-		go a.checkForUpdates(ctx)
+		go a.heartbeatLoop(ctx)
 	}
 
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
@@ -684,14 +684,43 @@ func (a *Agent) Stop(ctx context.Context) error {
 	return nil
 }
 
-// checkForUpdates sends a heartbeat and logs a warning if a newer SDK is available.
-func (a *Agent) checkForUpdates(ctx context.Context) {
+// heartbeatLoop sends periodic heartbeats to keep the agent online.
+// It also checks version advisories from the server on each heartbeat.
+func (a *Agent) heartbeatLoop(ctx context.Context) {
 	regClient, ok := a.discovery.(*discovery.RegistryClient)
 	if !ok {
 		return
 	}
+
+	const heartbeatInterval = 30 * time.Second
+
+	// Send the first heartbeat immediately.
+	a.sendHeartbeat(ctx, regClient)
+
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.mu.RLock()
+			running := a.running
+			a.mu.RUnlock()
+			if !running {
+				return
+			}
+			a.sendHeartbeat(ctx, regClient)
+		}
+	}
+}
+
+// sendHeartbeat sends a single heartbeat and processes the server response.
+func (a *Agent) sendHeartbeat(ctx context.Context, regClient *discovery.RegistryClient) {
 	resp, err := regClient.Heartbeat(ctx, a.agentID, "online")
 	if err != nil {
+		a.logger.Debug("heartbeat failed", "error", err)
 		return
 	}
 	if resp.VersionAdvisory != nil && resp.VersionAdvisory.SDKUpdateAvailable {
