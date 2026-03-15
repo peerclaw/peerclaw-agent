@@ -368,9 +368,12 @@ func (m *Manager) handleOffer(msg pcsignaling.SignalMessage) {
 	}
 
 	// Establish session key if X25519 key was provided in the offer.
+	// Session key is required for E2E encryption — fail the connection if derivation fails.
 	if msg.X25519PublicKey != "" && m.onSession != nil {
 		if err := m.onSession(peerID, msg.X25519PublicKey); err != nil {
-			m.logger.Warn("failed to establish session from offer", "peer", peerID, "error", err)
+			m.logger.Error("session key derivation failed, dropping connection", "peer", peerID, "error", err)
+			m.cleanupPending(peerID)
+			return
 		}
 	}
 
@@ -412,9 +415,13 @@ func (m *Manager) handleAnswer(msg pcsignaling.SignalMessage) {
 	}
 
 	// Establish session key if X25519 key was provided in the answer.
+	// Session key is required for E2E encryption — fail the connection if derivation fails.
 	if msg.X25519PublicKey != "" && m.onSession != nil {
 		if err := m.onSession(peerID, msg.X25519PublicKey); err != nil {
-			m.logger.Warn("failed to establish session from answer", "peer", peerID, "error", err)
+			m.logger.Error("session key derivation failed, dropping connection", "peer", peerID, "error", err)
+			pc.err = err
+			m.cleanupPending(peerID)
+			return
 		}
 	}
 }

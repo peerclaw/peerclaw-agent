@@ -274,7 +274,7 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 	// Envelope with capability → router handles, OnMessage not called.
 	env1 := envelope.New("peer-1", "test", protocol.ProtocolA2A, []byte("hi"))
 	env1.Metadata[MetadataKeyCapability] = "greet"
-	env1.Nonce = "nonce-coexist-1"
+	env1.Nonce = "nonce-coexist-001"
 	env1.Timestamp = time.Now()
 	if err := identity.SignEnvelope(env1, kp.PrivateKey); err != nil {
 		t.Fatalf("SignEnvelope: %v", err)
@@ -291,7 +291,7 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 	// Envelope without capability → OnMessage handles.
 	routerCalled = false
 	env2 := envelope.New("peer-1", "test", protocol.ProtocolA2A, []byte("hello"))
-	env2.Nonce = "nonce-coexist-2"
+	env2.Nonce = "nonce-coexist-002"
 	env2.Timestamp = time.Now()
 	if err := identity.SignEnvelope(env2, kp.PrivateKey); err != nil {
 		t.Fatalf("SignEnvelope: %v", err)

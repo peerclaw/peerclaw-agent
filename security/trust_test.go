@@ -264,7 +264,7 @@ func TestMessageValidator_SignatureVerification(t *testing.T) {
 
 	payload := []byte(`{"message": "hello"}`)
 	env := envelope.New("src", "dst", protocol.ProtocolA2A, payload)
-	env.Nonce = "test-nonce-1"
+	env.Nonce = "test-nonce-00001"
 	env.Timestamp = time.Now()
 	// Sign the full envelope (covers Source, Destination, Protocol,
 	// MessageType, Nonce, Timestamp, Payload).
@@ -279,7 +279,7 @@ func TestMessageValidator_SignatureVerification(t *testing.T) {
 
 	// Tamper with payload — signature over full envelope should fail.
 	env.Payload = []byte(`{"message": "tampered"}`)
-	env.Nonce = "test-nonce-2" // new nonce to avoid replay detection
+	env.Nonce = "test-nonce-00002" // new nonce to avoid replay detection
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err == nil {
 		t.Error("tampered payload should fail signature verification")
 	}

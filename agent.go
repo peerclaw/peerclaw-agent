@@ -173,6 +173,7 @@ type Agent struct {
 	agentID            string
 	logger             *slog.Logger
 	mu                 sync.RWMutex
+	wg                 sync.WaitGroup
 	running            bool
 	versionWarned      sync.Once
 	stopNonceCleaner   context.CancelFunc
@@ -535,7 +536,9 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Start nonce cleanup goroutine.
 	nonceCtx, nonceCancel := context.WithCancel(ctx)
 	a.stopNonceCleaner = nonceCancel
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -635,7 +638,11 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Start periodic heartbeat loop.
 	if !a.opts.SkipRegistration {
-		go a.heartbeatLoop(ctx)
+		a.wg.Add(1)
+		go func() {
+			defer a.wg.Done()
+			a.heartbeatLoop(ctx)
+		}()
 	}
 
 	a.logger.Info("agent started", "id", a.agentID, "name", a.opts.Name, "pubkey", a.keypair.PublicKeyString())
@@ -702,6 +709,9 @@ func (a *Agent) Stop(ctx context.Context) error {
 	// Close signaling and peers.
 	a.signaling.Close()
 	a.peerManager.Close()
+
+	// Wait for background goroutines (heartbeat, nonce cleanup) to finish.
+	a.wg.Wait()
 
 	a.logger.Info("agent stopped", "id", a.agentID)
 	return nil

@@ -141,7 +141,7 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	})
 
 	env2 := envelope.New(peer1ID, peer2ID, protocol.ProtocolA2A, payload)
-	env2.Nonce = "e2e-nonce-1"
+	env2.Nonce = "e2e-nonce-test-001"
 	env2.Timestamp = time.Now()
 	// Encrypt-then-sign: encrypt payload first, then sign the ciphertext.
 	aad2 := []byte(env2.Source + "|" + env2.Destination + "|" + env2.Nonce)

@@ -51,6 +51,11 @@ func (v *MessageValidator) ValidateMessage(env *envelope.Envelope, pubKeyStr str
 	if env.Nonce == "" {
 		return fmt.Errorf("missing nonce: replay protection requires a nonce")
 	}
+	// Validate nonce format: must be 16-64 characters (UUID is 36 chars).
+	// Prevents dedup map abuse with extremely short or long nonces.
+	if len(env.Nonce) < 16 || len(env.Nonce) > 64 {
+		return fmt.Errorf("invalid nonce length %d: must be 16-64 characters", len(env.Nonce))
+	}
 
 	v.mu.Lock()
 	if _, seen := v.nonces[env.Nonce]; seen {
