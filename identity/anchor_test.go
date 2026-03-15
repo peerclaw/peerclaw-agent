@@ -63,7 +63,10 @@ func TestNostrAnchorVerify(t *testing.T) {
 
 	// Create the binding data and sign it.
 	bindingData := CreateBindingData(pubKeyStr, anchorID)
-	signature := pcidentity.Sign(kp.PrivateKey, bindingData)
+	signature, err := pcidentity.Sign(kp.PrivateKey, bindingData)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
 
 	anchor := Anchor{
 		PubKey:           pubKeyStr,

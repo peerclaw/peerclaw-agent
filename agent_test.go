@@ -149,7 +149,9 @@ func TestAgent_E2EEncryptionRoundTrip(t *testing.T) {
 	env2.Payload = encrypted2
 	env2.Encrypted = true
 	env2.SenderX25519 = a1X25519
-	identity.SignEnvelope(env2, a1.keypair.PrivateKey)
+	if err := identity.SignEnvelope(env2, a1.keypair.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 
 	a2.HandleIncomingEnvelope(ctx, env2)
 
@@ -249,7 +251,9 @@ func TestHandleIncomingEnvelope_AcceptsWhitelisted(t *testing.T) {
 	env := envelope.New("trusted-peer", "Agent", protocol.ProtocolA2A, []byte("hello"))
 	env.Nonce = "whitelist-nonce-1"
 	env.Timestamp = time.Now()
-	identity.SignEnvelope(env, kp.PrivateKey)
+	if err := identity.SignEnvelope(env, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 	a.HandleIncomingEnvelope(context.Background(), env)
 
 	if !received {
@@ -307,7 +311,9 @@ func TestHandleIncomingEnvelope_RejectsReplayedNonce(t *testing.T) {
 	env1 := envelope.New("peer-1", "Agent", protocol.ProtocolA2A, []byte("hello"))
 	env1.Nonce = "unique-nonce-123"
 	env1.Timestamp = time.Now()
-	identity.SignEnvelope(env1, kp.PrivateKey)
+	if err := identity.SignEnvelope(env1, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 	a.HandleIncomingEnvelope(context.Background(), env1)
 
 	if callCount != 1 {

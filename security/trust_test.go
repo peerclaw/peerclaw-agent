@@ -201,7 +201,9 @@ func TestMessageValidator_ReplayProtection(t *testing.T) {
 	env := envelope.New("src", "dst", protocol.ProtocolA2A, []byte("{}"))
 	env.Nonce = "unique-nonce-123"
 	env.Timestamp = time.Now()
-	identity.SignEnvelope(env, kp.PrivateKey)
+	if err := identity.SignEnvelope(env, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err != nil {
 		t.Fatalf("first message should pass: %v", err)
@@ -266,7 +268,9 @@ func TestMessageValidator_SignatureVerification(t *testing.T) {
 	env.Timestamp = time.Now()
 	// Sign the full envelope (covers Source, Destination, Protocol,
 	// MessageType, Nonce, Timestamp, Payload).
-	identity.SignEnvelope(env, kp.PrivateKey)
+	if err := identity.SignEnvelope(env, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 
 	v := NewMessageValidator()
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err != nil {
@@ -291,7 +295,9 @@ func TestMessageValidator_SignatureCoversHeaders(t *testing.T) {
 	env := envelope.New("alice", "bob", protocol.ProtocolA2A, payload)
 	env.Nonce = "test-nonce-hdr-1"
 	env.Timestamp = time.Now()
-	identity.SignEnvelope(env, kp.PrivateKey)
+	if err := identity.SignEnvelope(env, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 
 	v := NewMessageValidator()
 
@@ -306,8 +312,10 @@ func TestMessageValidator_SignatureCoversHeaders(t *testing.T) {
 	env.Source = "alice"
 	env.Destination = "eve"
 	env.Nonce = "test-nonce-hdr-3"
-	identity.SignEnvelope(env, kp.PrivateKey) // re-sign with new dest
-	env.Destination = "bob"                   // then tamper
+	if err := identity.SignEnvelope(env, kp.PrivateKey); err != nil { // re-sign with new dest
+		t.Fatalf("SignEnvelope: %v", err)
+	}
+	env.Destination = "bob" // then tamper
 	env.Nonce = "test-nonce-hdr-4"
 	if err := v.ValidateMessage(env, kp.PublicKeyString()); err == nil {
 		t.Error("tampered Destination should fail signature verification")

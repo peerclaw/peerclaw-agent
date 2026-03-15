@@ -276,7 +276,9 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 	env1.Metadata[MetadataKeyCapability] = "greet"
 	env1.Nonce = "nonce-coexist-1"
 	env1.Timestamp = time.Now()
-	identity.SignEnvelope(env1, kp.PrivateKey)
+	if err := identity.SignEnvelope(env1, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 	a.HandleIncomingEnvelope(context.Background(), env1)
 
 	if !routerCalled {
@@ -291,7 +293,9 @@ func TestAgent_HandleAndOnMessage_Coexistence(t *testing.T) {
 	env2 := envelope.New("peer-1", "test", protocol.ProtocolA2A, []byte("hello"))
 	env2.Nonce = "nonce-coexist-2"
 	env2.Timestamp = time.Now()
-	identity.SignEnvelope(env2, kp.PrivateKey)
+	if err := identity.SignEnvelope(env2, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 	a.HandleIncomingEnvelope(context.Background(), env2)
 
 	if routerCalled {

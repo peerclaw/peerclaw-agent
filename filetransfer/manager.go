@@ -241,7 +241,10 @@ func (m *Manager) handleFileOffer(ctx context.Context, env *envelope.Envelope) (
 	}
 
 	// Sign sender's challenge.
-	challengeSig := SignChallenge(offer.Challenge, m.cfg.PrivateKey)
+	challengeSig, err := SignChallenge(offer.Challenge, m.cfg.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign challenge: %w", err)
+	}
 
 	// Generate counter-challenge.
 	counterChallenge, err := GenerateChallenge()
@@ -309,7 +312,10 @@ func (m *Manager) handleFileAccept(ctx context.Context, env *envelope.Envelope) 
 	}
 
 	// Sign counter-challenge.
-	counterSig := SignChallenge(accept.CounterChallenge, m.cfg.PrivateKey)
+	counterSig, err := SignChallenge(accept.CounterChallenge, m.cfg.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("sign counter-challenge: %w", err)
+	}
 	t.CounterChallenge = accept.CounterChallenge
 
 	if err := t.Transition(StateAccepted); err != nil {

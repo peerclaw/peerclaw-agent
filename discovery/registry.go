@@ -276,14 +276,18 @@ func (c *RegistryClient) SetAuth(privKey ed25519.PrivateKey, pubKey, agentID str
 }
 
 // signRequest adds Ed25519 signature headers to an HTTP request.
-func (c *RegistryClient) signRequest(req *http.Request, body []byte) {
+func (c *RegistryClient) signRequest(req *http.Request, body []byte) error {
 	if c.privateKey == nil {
-		return
+		return nil
 	}
-	sig := identity.Sign(c.privateKey, body)
+	sig, err := identity.Sign(c.privateKey, body)
+	if err != nil {
+		return fmt.Errorf("sign request: %w", err)
+	}
 	req.Header.Set("X-PeerClaw-Signature", sig)
 	req.Header.Set("X-PeerClaw-PublicKey", c.publicKey)
 	req.Header.Set("X-PeerClaw-Agent-ID", c.agentID)
+	return nil
 }
 
 // ContactEntry represents a contact returned by the server API.
@@ -300,7 +304,9 @@ func (c *RegistryClient) ListContacts(ctx context.Context, agentID string) ([]Co
 	if err != nil {
 		return nil, err
 	}
-	c.signRequest(req, nil)
+	if err := c.signRequest(req, nil); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -332,7 +338,9 @@ func (c *RegistryClient) AddContact(ctx context.Context, agentID, contactAgentID
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.signRequest(req, body)
+	if err := c.signRequest(req, body); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -352,7 +360,9 @@ func (c *RegistryClient) RemoveContact(ctx context.Context, agentID, contactAgen
 	if err != nil {
 		return err
 	}
-	c.signRequest(req, nil)
+	if err := c.signRequest(req, nil); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -387,7 +397,9 @@ func (c *RegistryClient) SendContactRequest(ctx context.Context, agentID, target
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.signRequest(req, body)
+	if err := c.signRequest(req, body); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -407,7 +419,9 @@ func (c *RegistryClient) ListIncomingContactRequests(ctx context.Context, agentI
 	if err != nil {
 		return nil, err
 	}
-	c.signRequest(req, nil)
+	if err := c.signRequest(req, nil); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -439,7 +453,9 @@ func (c *RegistryClient) UpdateContactRequest(ctx context.Context, agentID, requ
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.signRequest(req, body)
+	if err := c.signRequest(req, body); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -336,7 +336,13 @@ func (a *Agent) Start(ctx context.Context) error {
 				a.mu.Unlock()
 				return fmt.Errorf("discovery backend does not support claim registration")
 			}
-			sig := identity.Sign(a.keypair.PrivateKey, []byte(a.opts.ClaimToken))
+			sig, err := identity.Sign(a.keypair.PrivateKey, []byte(a.opts.ClaimToken))
+			if err != nil {
+				a.mu.Lock()
+				a.running = false
+				a.mu.Unlock()
+				return fmt.Errorf("sign claim token: %w", err)
+			}
 			card, err := claimer.ClaimRegister(ctx, discovery.ClaimRequest{
 				Token:        a.opts.ClaimToken,
 				Name:         a.opts.Name,
@@ -875,7 +881,9 @@ func (a *Agent) Send(ctx context.Context, env *envelope.Envelope) error {
 
 	// Step 2: Sign the full envelope. When encrypted, the signature covers
 	// the ciphertext, enabling pre-authentication before decryption.
-	identity.SignEnvelope(env, a.keypair.PrivateKey)
+	if err := identity.SignEnvelope(env, a.keypair.PrivateKey); err != nil {
+		return fmt.Errorf("sign envelope: %w", err)
+	}
 
 	// 1. Try existing P2P connection.
 	if err := a.peerManager.Send(ctx, env.Destination, env); err == nil {

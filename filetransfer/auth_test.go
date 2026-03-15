@@ -20,7 +20,10 @@ func TestChallengeResponseRoundTrip(t *testing.T) {
 		t.Fatal("challenge should not be empty")
 	}
 
-	sig := SignChallenge(challenge, priv)
+	sig, err := SignChallenge(challenge, priv)
+	if err != nil {
+		t.Fatalf("SignChallenge: %v", err)
+	}
 	if sig == "" {
 		t.Fatal("signature should not be empty")
 	}
@@ -35,7 +38,7 @@ func TestChallengeWrongKey(t *testing.T) {
 	otherPub, _, _ := ed25519.GenerateKey(nil)
 
 	challenge, _ := GenerateChallenge()
-	sig := SignChallenge(challenge, priv)
+	sig, _ := SignChallenge(challenge, priv)
 
 	if err := VerifyChallenge(challenge, sig, otherPub); err == nil {
 		t.Error("expected VerifyChallenge to fail with wrong public key")
@@ -46,7 +49,7 @@ func TestChallengeModifiedPayload(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 
 	challenge, _ := GenerateChallenge()
-	sig := SignChallenge(challenge, priv)
+	sig, _ := SignChallenge(challenge, priv)
 
 	otherChallenge, _ := GenerateChallenge()
 	if err := VerifyChallenge(otherChallenge, sig, pub); err == nil {

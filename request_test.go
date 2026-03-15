@@ -228,7 +228,9 @@ func TestSendRequest_NonMatchingResponsePassthrough(t *testing.T) {
 	resp.TraceID = "unrelated-trace"
 	resp.Nonce = "passthrough-nonce-1"
 	resp.Timestamp = time.Now()
-	identity.SignEnvelope(resp, kp.PrivateKey)
+	if err := identity.SignEnvelope(resp, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 	a.HandleIncomingEnvelope(context.Background(), resp)
 
 	if !userHandlerCalled {
@@ -359,7 +361,9 @@ func TestHandleIncomingEnvelope_A2AStateEvent(t *testing.T) {
 	event.Metadata["a2a.state"] = string(TaskWorking)
 	event.Nonce = "a2a-state-nonce-1"
 	event.Timestamp = time.Now()
-	identity.SignEnvelope(event, kp.PrivateKey)
+	if err := identity.SignEnvelope(event, kp.PrivateKey); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
 
 	a.HandleIncomingEnvelope(context.Background(), event)
 

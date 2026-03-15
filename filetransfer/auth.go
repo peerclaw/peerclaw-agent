@@ -19,7 +19,7 @@ func GenerateChallenge() (string, error) {
 }
 
 // SignChallenge signs a base64-encoded challenge with the given Ed25519 private key.
-func SignChallenge(challenge string, privKey ed25519.PrivateKey) string {
+func SignChallenge(challenge string, privKey ed25519.PrivateKey) (string, error) {
 	data, err := base64.StdEncoding.DecodeString(challenge)
 	if err != nil {
 		// If decode fails, sign the raw string.
