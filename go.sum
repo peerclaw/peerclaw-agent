@@ -32,12 +32,8 @@ github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w
 github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
 github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9Gz0M=
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
-github.com/peerclaw/peerclaw-core v0.6.0 h1:2Ng1dRgKo+Kg1/R9ybAWrIxX/Otc3veemQe39hEKJy0=
-github.com/peerclaw/peerclaw-core v0.6.0/go.mod h1:nlxhZV5ClCDDAh11ubrTLFluae1fK7bLj3uyUk/Gc4A=
-github.com/peerclaw/peerclaw-core v0.6.1 h1:xacM1gXa0ypFC31nNCvqY+9dr2s4xxQb/mWhybMIgP8=
-github.com/peerclaw/peerclaw-core v0.6.1/go.mod h1:nlxhZV5ClCDDAh11ubrTLFluae1fK7bLj3uyUk/Gc4A=
-github.com/peerclaw/peerclaw-core v0.6.2 h1:NIxTcOisypXJ+CYJunCIUkKHpFcP9QeJrMbqn+sokuU=
-github.com/peerclaw/peerclaw-core v0.6.2/go.mod h1:nlxhZV5ClCDDAh11ubrTLFluae1fK7bLj3uyUk/Gc4A=
+github.com/peerclaw/peerclaw-core v0.7.0 h1:x7Z4QWRExGv0Fcv2WnD45JTer/Fktsgpt8IAx5LRwLI=
+github.com/peerclaw/peerclaw-core v0.7.0/go.mod h1:nlxhZV5ClCDDAh11ubrTLFluae1fK7bLj3uyUk/Gc4A=
 github.com/pion/datachannel v1.5.10 h1:ly0Q26K1i6ZkGf42W7D4hQYR90pZwzFOjTq5AuCKk4o=
 github.com/pion/datachannel v1.5.10/go.mod h1:p/jJfC9arb29W7WrxyKbepTU20CFgyx5oLo8Rs4Py/M=
 github.com/pion/dtls/v3 v3.0.6 h1:7Hkd8WhAJNbRgq9RgdNh1aaWlZlGpYTzdqjy9x9sK2E=
