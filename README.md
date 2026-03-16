@@ -54,6 +54,7 @@ The agent SDK defines a `platform.Adapter` interface that lets PeerClaw agents r
 - [**ironclaw-plugin**](https://github.com/peerclaw/ironclaw-plugin) — IronClaw (Rust WASM, HTTP/SSE)
 - [**picoclaw-plugin**](https://github.com/peerclaw/picoclaw-plugin) — PicoClaw (Go, native)
 - [**nanobot-plugin**](https://github.com/peerclaw/nanobot-plugin) — NanoBot (Python)
+- [**zeroclaw-plugin**](https://github.com/peerclaw/zeroclaw-plugin) — ZeroClaw (Rust, WebSocket)
 
 See each plugin's README for configuration and usage details.
 
@@ -144,6 +145,12 @@ for _, r := range results {
 | `agent.GetTransfer(fileID)` | Get status of a specific file transfer |
 | `agent.CancelTransfer(fileID)` | Cancel an in-progress file transfer |
 | `agent.OnConnectionRequest(handler)` | Register a callback for connection requests from unknown peers |
+| `agent.NewSimple(name, url, caps)` | Create a minimal Agent (no Nostr/DHT) |
+| `agent.Keypair()` | Get the Ed25519 keypair |
+| `agent.TrustStore()` | Get the trust store |
+| `agent.Router()` | Get the capability-based router |
+| `agent.SetNotificationHandler(h)` | Register handler for server notifications |
+| `agent.Sessions()` | List active peer sessions |
 
 ### Options
 
@@ -159,6 +166,11 @@ for _, r := range results {
 | `FileTransferDir` | Directory for received files (defaults to current directory) |
 | `ResumeStatePath` | Path to persist file transfer resume state |
 | `Logger` | Structured logger |
+| `ClaimToken` | Claim token for account-bound registration |
+| `HealthCheck` | Callback reporting agent status before each heartbeat |
+| `PlatformAdapters` | List of platform adapters to enable (OpenClaw, IronClaw, etc.) |
+| `InboxRelays` | Nostr relay URLs for offline message delivery (mailbox) |
+| `ConnectionGate` | Callback to accept/deny unknown peer connections |
 
 ## Security Model
 
