@@ -8,7 +8,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/google/uuid v1.6.0
-	github.com/peerclaw/peerclaw-core v0.7.0
+	github.com/peerclaw/peerclaw-core v0.8.0
 	github.com/pion/webrtc/v4 v4.1.2
 	golang.org/x/crypto v0.48.0
 )
