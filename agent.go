@@ -177,6 +177,8 @@ type Agent struct {
 	running            bool
 	versionWarned      sync.Once
 	stopNonceCleaner   context.CancelFunc
+	callbackCtx        context.Context
+	callbackCancel     context.CancelFunc
 }
 
 // agentTransportProvider adapts the Agent's peer/transport layer for the file transfer Manager.
@@ -322,6 +324,11 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.running = true
 	a.mu.Unlock()
 
+	// Create a cancelable context for callbacks and async operations.
+	// Cancelled in Stop() so that in-flight message processing is interrupted
+	// when the agent shuts down.
+	a.callbackCtx, a.callbackCancel = context.WithCancel(ctx)
+
 	if a.opts.SkipRegistration {
 		// Derive agent ID from public key without server registration.
 		a.agentID = a.keypair.PublicKeyString()
@@ -429,7 +436,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.logger.Warn("invalid bridge message", "error", err)
 			return
 		}
-		a.HandleIncomingEnvelope(context.Background(), &env)
+		a.HandleIncomingEnvelope(a.callbackCtx, &env)
 	})
 
 	// Set up notification handler for server notifications via signaling.
@@ -605,7 +612,7 @@ func (a *Agent) Start(ctx context.Context) error {
 				return
 			}
 			env := envelope.New(a.agentID, peerID, "peerclaw", []byte(text))
-			_ = a.Send(context.Background(), env)
+			_ = a.Send(a.callbackCtx, env)
 		})
 		if err := pa.Connect(ctx); err != nil {
 			a.logger.Warn("platform connect failed", "platform", pa.Name(), "error", err)
@@ -677,6 +684,11 @@ func (a *Agent) Stop(ctx context.Context) error {
 	// Stop nonce cleanup goroutine.
 	if a.stopNonceCleaner != nil {
 		a.stopNonceCleaner()
+	}
+
+	// Cancel callback context so in-flight message processing stops.
+	if a.callbackCancel != nil {
+		a.callbackCancel()
 	}
 
 	// Deregister from platform.
@@ -1292,7 +1304,7 @@ func (a *Agent) AddContact(agentID string) error {
 	// Async push to server.
 	go func() {
 		if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
-			if err := regClient.AddContact(context.Background(), a.agentID, agentID, ""); err != nil {
+			if err := regClient.AddContact(a.callbackCtx, a.agentID, agentID, ""); err != nil {
 				a.logger.Debug("failed to push contact to server", "contact", agentID, "error", err)
 			}
 		}
@@ -1317,7 +1329,7 @@ func (a *Agent) RemoveContact(agentID string) {
 	// Async push to server.
 	go func() {
 		if regClient, ok := a.discovery.(*discovery.RegistryClient); ok {
-			if err := regClient.RemoveContact(context.Background(), a.agentID, agentID); err != nil {
+			if err := regClient.RemoveContact(a.callbackCtx, a.agentID, agentID); err != nil {
 				a.logger.Debug("failed to push contact removal to server", "contact", agentID, "error", err)
 			}
 		}
@@ -1542,7 +1554,7 @@ func (a *Agent) initiateRekey(peerID string) {
 	env := envelope.New(a.agentID, peerID, "peerclaw", payload)
 	env.MessageType = envelope.MessageTypeRekey
 
-	resp, err := a.SendRequest(context.Background(), env, 30*time.Second)
+	resp, err := a.SendRequest(a.callbackCtx, env, 30*time.Second)
 	if err != nil {
 		a.logger.Error("rekey: send request failed", "peer", peerID, "error", err)
 		return

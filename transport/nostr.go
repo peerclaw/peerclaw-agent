@@ -175,6 +175,12 @@ func (t *NostrTransport) subscribeLoop(ctx context.Context, rs *relayState) {
 	pubKeyHex := t.nostrKeys.PublicKeyHex()
 
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		rs.mu.Lock()
 		relay := rs.relay
 		isConnected := rs.connected
@@ -214,22 +220,28 @@ func (t *NostrTransport) subscribeLoop(ctx context.Context, rs *relayState) {
 			}
 		}
 
-		for {
+		// Process events from the subscription. When the channel closes,
+		// we break out, clean up with sub.Unsub(), and reconnect.
+		subClosed := false
+		for !subClosed {
 			select {
 			case <-ctx.Done():
 				sub.Unsub()
 				return
 			case event, ok := <-sub.Events:
 				if !ok {
-					// Subscription closed, attempt reconnect.
+					// Subscription closed, will reconnect after cleanup.
 					t.logger.Debug("subscription closed", "relay", rs.url)
-					goto reconnect
+					subClosed = true
+				} else {
+					t.handleEvent(&event)
 				}
-				t.handleEvent(&event)
 			}
 		}
 
-	reconnect:
+		// Always clean up the subscription before reconnecting.
+		sub.Unsub()
+
 		rs.mu.Lock()
 		rs.failures++
 		if rs.failures >= maxRelayFailures {
