@@ -2,6 +2,7 @@ package filetransfer
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -81,7 +82,7 @@ type Transfer struct {
 	State            TransferState
 	ChunkSize        int
 	TotalChunks      int
-	LastConfirmedSeq uint32
+	lastConfirmedSeq atomic.Uint32
 	Challenge        string // our challenge (base64)
 	CounterChallenge string // peer's counter-challenge (base64)
 	SessionKey       []byte // 32-byte symmetric key for chunk encryption
@@ -141,7 +142,7 @@ func (t *Transfer) Progress() float64 {
 	if t.TotalChunks == 0 {
 		return 0
 	}
-	return float64(t.LastConfirmedSeq) / float64(t.TotalChunks)
+	return float64(t.lastConfirmedSeq.Load()) / float64(t.TotalChunks)
 }
 
 // Info returns a read-only snapshot of the transfer state.
@@ -163,4 +164,14 @@ func (t *Transfer) Info() TransferInfo {
 		info.CompletedAt = t.CompletedAt
 	}
 	return info
+}
+
+// LoadLastConfirmedSeq atomically reads the last confirmed sequence number.
+func (t *Transfer) LoadLastConfirmedSeq() uint32 {
+	return t.lastConfirmedSeq.Load()
+}
+
+// StoreLastConfirmedSeq atomically writes the last confirmed sequence number.
+func (t *Transfer) StoreLastConfirmedSeq(seq uint32) {
+	t.lastConfirmedSeq.Store(seq)
 }

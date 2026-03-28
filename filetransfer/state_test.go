@@ -78,7 +78,7 @@ func TestTransferIsTerminal(t *testing.T) {
 func TestTransferProgress(t *testing.T) {
 	tr := NewTransfer("id", "peer", DirectionSend)
 	tr.TotalChunks = 100
-	tr.LastConfirmedSeq = 50
+	tr.StoreLastConfirmedSeq(50)
 
 	p := tr.Progress()
 	if p != 0.5 {

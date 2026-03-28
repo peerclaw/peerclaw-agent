@@ -115,7 +115,7 @@ func (r *Receiver) Start() {
 			r.transfer.BytesRecv += int64(len(plaintext))
 			r.transfer.LastActive = time.Now()
 			lastSeq = frame.Seq
-			r.transfer.LastConfirmedSeq = lastSeq
+			r.transfer.StoreLastConfirmedSeq(lastSeq)
 			chunkCount++
 
 			// Send periodic ACK.

@@ -57,7 +57,7 @@ func (s *NostrFallbackSender) Send(ctx context.Context) error {
 	defer f.Close()
 
 	chunkSize := NostrChunkSize
-	startSeq := s.transfer.LastConfirmedSeq + 1
+	startSeq := s.transfer.LoadLastConfirmedSeq() + 1
 	if startSeq > 1 {
 		offset := int64(startSeq-1) * int64(chunkSize)
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {

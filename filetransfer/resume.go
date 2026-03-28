@@ -26,7 +26,7 @@ func SaveResumeState(dir string, t *Transfer) error {
 
 	state := ResumeState{
 		FileID:  t.FileID,
-		LastSeq: t.LastConfirmedSeq,
+		LastSeq: t.LoadLastConfirmedSeq(),
 		PeerID:  t.PeerID,
 		SHA256:  t.SHA256,
 	}

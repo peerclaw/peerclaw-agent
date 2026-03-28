@@ -76,7 +76,7 @@ func (s *Sender) Start(ctx context.Context) {
 			"file_id", s.transfer.FileID,
 			"file", s.transfer.FilePath,
 			"total_chunks", s.transfer.TotalChunks,
-			"start_seq", s.transfer.LastConfirmedSeq+1,
+			"start_seq", s.transfer.LoadLastConfirmedSeq()+1,
 		)
 
 		if err := s.sendLoop(ctx, sendReady); err != nil {
@@ -109,7 +109,7 @@ func (s *Sender) sendLoop(ctx context.Context, sendReady <-chan struct{}) error 
 	}
 
 	// Seek to the resume point.
-	startSeq := s.transfer.LastConfirmedSeq + 1
+	startSeq := s.transfer.LoadLastConfirmedSeq() + 1
 	if startSeq > 1 {
 		offset := int64(startSeq-1) * int64(chunkSize)
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {

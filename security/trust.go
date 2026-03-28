@@ -371,7 +371,8 @@ func (ts *TrustStore) LoadFromFile(path string) error {
 		return json.Unmarshal(plaintext, &ts.trusted)
 	}
 
-	// Fallback: try plaintext JSON (migration path).
+	// Fallback: plaintext JSON (one-time migration from unencrypted store).
+	// Next SaveToFile call will automatically encrypt the data.
 	return json.Unmarshal(data, &ts.trusted)
 }
 

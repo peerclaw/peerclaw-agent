@@ -479,7 +479,7 @@ func (m *Manager) handleChunkAck(_ context.Context, env *envelope.Envelope) erro
 	m.mu.Lock()
 	t, ok := m.transfers[ack.FileID]
 	if ok {
-		t.LastConfirmedSeq = ack.LastSeq
+		t.StoreLastConfirmedSeq(ack.LastSeq)
 		t.LastActive = time.Now()
 	}
 	m.mu.Unlock()
@@ -503,7 +503,7 @@ func (m *Manager) handleResumeRequest(ctx context.Context, env *envelope.Envelop
 	}
 
 	// Resume from the given sequence number.
-	t.LastConfirmedSeq = req.LastSeq
+	t.StoreLastConfirmedSeq(req.LastSeq)
 	t.State = StateTransferring
 	t.LastActive = time.Now()
 
